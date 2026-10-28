@@ -1,0 +1,1958 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dashboard KPI Perintis Body &amp; Paint</title>
+<meta name="robots" content="noindex, nofollow">
+<style>
+:root {
+  color-scheme: dark;
+  --font-anthropic-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-anthropic-serif: Georgia, "Times New Roman", serif;
+  --cds-radius: 8px; --cds-dur-slow: .3s; --cds-ease-out: cubic-bezier(.2,.7,.2,1);
+}
+html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--font-anthropic-sans); }
+#dash-root { max-width: 1440px; margin: 0 auto; padding: 16px max(12px, env(safe-area-inset-left, 0px)) 32px max(12px, env(safe-area-inset-right, 0px)); }
+[hidden] { display: none !important; }
+.pp-status { max-width: 1440px; margin: 10px auto 0; padding: 10px 14px; border-radius: 8px; background: #161b22; border: 1px solid #2a323d; color: #8d99a8; font-size: 13px; }
+.pp-status.is-error { border-color: #f87171; color: #f87171; }
+.pp-topbar { max-width: 1440px; margin: 0 auto; display: flex; justify-content: flex-end; padding: 8px 12px 0; }
+.pp-topbar button { font: inherit; font-size: 12px; color: #8d99a8; background: transparent; border: 1px solid #2a323d; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+.pp-login { position: fixed; inset: 0; background: rgba(7,9,12,.92); display: grid; place-items: center; z-index: 50; padding: 16px; }
+.pp-login form { width: min(360px, 100%); background: #161b22; border: 1px solid #2a323d; border-top: 4px solid #ffb020; border-radius: 12px; padding: 22px; display: grid; gap: 12px; }
+.pp-login h1 { margin: 0; font-size: 18px; text-transform: uppercase; letter-spacing: .04em; }
+.pp-login p { margin: 0; color: #8d99a8; font-size: 13px; }
+.pp-login input { font: inherit; font-size: 15px; padding: 10px 12px; border-radius: 8px; border: 1px solid #2a323d; background: #0c0f13; color: #eef2f6; }
+.pp-login button { font: inherit; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; padding: 10px; border: 0; border-radius: 8px; background: #ffb020; color: #111; cursor: pointer; }
+#pp-login-msg { color: #f87171; min-height: 1em; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+/* Runtime kecil pengganti "dash" Claude untuk versi Vercel. */
+(function () {
+  const datasets = { ue_all: { status: 'loading', data: [], message: '' } };
+  const loaders = {}, calcs = {}, calcCache = {}, draws = {}, onDatas = [];
+  let params = {};
+  let renderQueued = false;
+
+  const api = async (url) => {
+    const r = await fetch(url, { credentials: 'same-origin' });
+    if (r.status === 401) { showLogin(); throw new Error('Perlu login'); }
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    return j;
+  };
+
+  const dash = {
+    loader(id, def) { loaders[id] = def; },
+    calc(id, def) { calcs[id] = def; },
+    data(id) {
+      if (datasets[id]) return { status: datasets[id].status, data: datasets[id].data, message: datasets[id].message, refreshing: false, meta: [] };
+      if (calcs[id]) {
+        if (calcCache[id]) return calcCache[id];
+        const ins = calcs[id].inputs.map((i) => dash.data(i));
+        const bad = ins.find((d) => d.status !== 'ok');
+        if (bad) return { status: bad.status, data: [], message: bad.message };
+        try { calcCache[id] = { status: 'ok', data: calcs[id].fn(...ins.map((d) => d.data)) }; }
+        catch (e) { console.error('calc', id, e); calcCache[id] = { status: 'error', data: [], message: String(e) }; }
+        return calcCache[id];
+      }
+      return { status: 'missing', data: [] };
+    },
+    onData(fn) { onDatas.push(fn); queue(); },
+    draw(name, fn) { if (fn) draws[name] = fn; queue(); },
+    params() { return { ...params }; },
+    setParams(p) { params = { ...params, ...p }; Object.keys(params).forEach((k) => params[k] == null && delete params[k]); queue(); },
+    resetParams() { params = {}; queue(); },
+    setLink(name) { try { history.replaceState(null, '', '#' + name); } catch (e) {} },
+    refresh() { load(); },
+    colors: ['#ffb020', '#22d3ee', '#a3e635', '#f472b6', '#a78bfa', '#34d399', '#fb923c', '#60a5fa'],
+  };
+  window.dash = dash;
+
+  function visible(el) { return !el.closest('[hidden]'); }
+  function render() {
+    renderQueued = false;
+    Object.keys(calcCache).forEach((k) => delete calcCache[k]);
+    onDatas.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } });
+    Object.keys(draws).forEach((name) => {
+      document.querySelectorAll('[data-draw="' + name + '"]').forEach((el) => {
+        if (!visible(el)) return;
+        try { draws[name](el); } catch (e) { console.error('draw', name, e); }
+      });
+    });
+    const st = datasets.ue_all.status;
+    const bar = document.getElementById('pp-status');
+    if (bar) {
+      bar.hidden = st === 'ok';
+      bar.textContent = st === 'loading' ? 'Memuat data dari Google Drive… (membaca semua file bulan)' : st === 'error' ? 'Data gagal dimuat: ' + datasets.ue_all.message : '';
+      bar.className = 'pp-status' + (st === 'error' ? ' is-error' : '');
+    }
+  }
+  function queue() { if (!renderQueued) { renderQueued = true; requestAnimationFrame(render); } }
+
+  async function load() {
+    datasets.ue_all = { status: 'loading', data: [], message: '' }; queue();
+    try {
+      const answer = await api('/api/search');
+      const call = async (tool, args) => {
+        if (tool === 'download_file_content') return api('/api/file?id=' + encodeURIComponent(args.fileId));
+        if (tool === 'search_files') return { files: [] };
+        throw new Error('Tool tidak dikenal: ' + tool);
+      };
+      const res = await loaders.ue_all.fn({ answer, call, args: {} });
+      datasets.ue_all = { status: 'ok', data: Array.isArray(res) ? res : res.rows, message: '' };
+    } catch (e) {
+      if (String(e.message) === 'Perlu login') return;
+      datasets.ue_all = { status: 'error', data: [], message: String(e.message || e) };
+    }
+    queue();
+  }
+
+  // Login
+  function showLogin() { const o = document.getElementById('pp-login'); if (o) o.hidden = false; }
+  document.addEventListener('DOMContentLoaded', () => {
+    const form = document.getElementById('pp-login-form');
+    if (form) form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const msg = document.getElementById('pp-login-msg');
+      msg.textContent = 'Memeriksa…';
+      const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('pp-pass').value }) });
+      if (r.ok) { document.getElementById('pp-login').hidden = true; msg.textContent = ''; load(); }
+      else msg.textContent = 'Password salah. Coba lagi.';
+    });
+    const out = document.getElementById('pp-logout');
+    if (out) out.addEventListener('click', async () => { await fetch('/api/logout'); location.reload(); });
+    // redraw when sections are shown/hidden or the window is resized
+    const mo = new MutationObserver((ms) => { if (ms.some((m) => !(m.target.classList && m.target.classList.contains('pp-tip')))) queue(); });
+    mo.observe(document.getElementById('dash-root'), { attributes: true, attributeFilter: ['hidden'], subtree: true });
+    let t; window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(queue, 150); });
+    load();
+  });
+})();
+
+</script>
+</head>
+<body>
+<div class="pp-topbar"><button type="button" id="pp-logout">Keluar</button></div>
+<div id="pp-status" class="pp-status">Memuat data dari Google Drive…</div>
+<div class="pp-login" id="pp-login" hidden>
+  <form id="pp-login-form">
+    <h1>Perintis Perkasa · Body &amp; Paint</h1>
+    <p>Masukkan password tim untuk membuka dashboard KPI.</p>
+    <input id="pp-pass" type="password" autocomplete="current-password" placeholder="Password" required>
+    <button type="submit">Masuk</button>
+    <p id="pp-login-msg" aria-live="polite"></p>
+  </form>
+</div>
+<div id="dash-root">
+<meta name="dash-one-writer">
+<style>
+#dash-root { --dash-gutter: 0; }
+.pp {
+  --pp-bg: #0c0f13;
+  --pp-bg2: #11151b;
+  --pp-panel: #161b22;
+  --pp-panel2: #1c222b;
+  --pp-line: #2a323d;
+  --pp-fg: #eef2f6;
+  --pp-muted: #8d99a8;
+  --pp-dim: #5d6876;
+  --pp-ue: #ffb020;
+  --pp-rev: #22d3ee;
+  --pp-cpus: #a3e635;
+  --pp-psdn: #f472b6;
+  --pp-ok: #34d399;
+  --pp-warn: #fbbf24;
+  --pp-bad: #f87171;
+  --pp-target: #3b4552;
+  color-scheme: dark;
+  background: var(--pp-bg);
+  color: var(--pp-fg);
+  font-family: var(--font-anthropic-sans);
+  font-variant-numeric: tabular-nums;
+  padding: 0 0 28px;
+  border-radius: var(--cds-radius);
+  overflow: hidden;
+}
+.pp b { font-weight: 700; }
+.pp-band {
+  background:
+    repeating-linear-gradient(135deg, rgba(255,255,255,.025) 0 6px, transparent 6px 14px),
+    linear-gradient(180deg, #151a21, var(--pp-bg));
+  border-bottom: 1px solid var(--pp-line);
+  padding: 22px max(16px, 2.2vw) 20px;
+  display: grid;
+  gap: 14px;
+}
+.pp-hazard { height: 6px; background: repeating-linear-gradient(135deg, var(--pp-ue) 0 14px, #111 14px 28px); }
+.pp-eyebrow { font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: var(--pp-ue); font-weight: 700; margin: 0; }
+.pp-title { font-size: clamp(24px, 3.4vw, 36px); font-weight: 800; letter-spacing: -.01em; margin: 0; text-transform: uppercase; line-height: 1.1; text-wrap: balance; }
+.pp-title span { color: var(--pp-ue); }
+.pp-take { margin: 0; font-size: 15px; color: var(--pp-muted); max-width: 70ch; }
+.pp-take b { color: var(--pp-fg); }
+.pp-meta { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.pp-pick { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--pp-ue); }
+.pp-pick select { font: inherit; font-size: 14px; letter-spacing: 0; text-transform: none; font-weight: 700; color: #111; background: var(--pp-ue); border: 0; border-radius: 6px; padding: 7px 30px 7px 10px; cursor: pointer; appearance: none; background-image: linear-gradient(45deg, transparent 50%, #111 50%), linear-gradient(135deg, #111 50%, transparent 50%); background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%; background-size: 5px 5px; background-repeat: no-repeat; min-width: 11rem; }
+.pp-pick select:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.pp-pick select option { background: #161b22; color: #eef2f6; }
+.pp-chip { display: inline-flex; gap: 6px; align-items: baseline; padding: 6px 10px; border: 1px solid var(--pp-line); background: var(--pp-panel); border-radius: 6px; font-size: 13px; color: var(--pp-muted); }
+.pp-chip b { color: var(--pp-fg); font-size: 14px; }
+.pp-prog { flex: 1 1 220px; min-width: 0; display: grid; gap: 4px; }
+.pp-prog-label { font-size: 11px; color: var(--pp-muted); letter-spacing: .08em; text-transform: uppercase; }
+.pp-prog-track { height: 8px; border-radius: 4px; background: var(--pp-panel2); overflow: hidden; border: 1px solid var(--pp-line); }
+.pp-prog-fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--pp-ue), #ff7a1a); }
+
+.pp-wrap { padding: 20px max(16px, 2.2vw) 0; display: grid; gap: 26px; }
+.pp-h2 { margin: 0 0 4px; font-size: 13px; letter-spacing: .16em; text-transform: uppercase; color: var(--pp-muted); font-weight: 700; display: flex; align-items: center; gap: 10px; }
+.pp-h2::before { content: ""; width: 14px; height: 14px; background: var(--pp-ue); clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%); flex: none; }
+.pp-sub { margin: 0 0 12px; font-size: 13px; color: var(--pp-dim); }
+
+.pp-cards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15.5rem), 1fr)); }
+.pp-card { background: var(--pp-panel); border: 1px solid var(--pp-line); border-radius: 10px; padding: 16px; display: grid; gap: 10px; position: relative; min-width: 0; border-top: 4px solid var(--pp-k, var(--pp-ue)); }
+.pp-card[data-k="ue"] { --pp-k: var(--pp-ue); }
+.pp-card[data-k="rev"] { --pp-k: var(--pp-rev); }
+.pp-card[data-k="cpus"] { --pp-k: var(--pp-cpus); }
+.pp-card[data-k="psdn"] { --pp-k: var(--pp-psdn); }
+.pp-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.pp-card-name { margin: 0; font-size: 15px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--pp-k); }
+.pp-card-def { margin: 2px 0 0; font-size: 12px; color: var(--pp-dim); }
+.pp-badge { font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; padding: 3px 8px; border-radius: 4px; border: 1px solid currentColor; white-space: nowrap; color: var(--pp-muted); }
+.pp-badge[data-st] { display: none; }
+.pp-card.is-ok .pp-badge[data-st="ok"], .pp-card.is-warn .pp-badge[data-st="warn"], .pp-card.is-bad .pp-badge[data-st="bad"] { display: inline-block; }
+.pp-badge[data-st="ok"] { color: var(--pp-ok); }
+.pp-badge[data-st="warn"] { color: var(--pp-warn); }
+.pp-badge[data-st="bad"] { color: var(--pp-bad); }
+.pp-card-mid { display: grid; grid-template-columns: 112px 1fr; gap: 12px; align-items: center; }
+.pp-gauge { width: 112px; height: 74px; }
+.pp-big { font-size: clamp(16px, 1.35vw, 24px); font-weight: 800; line-height: 1.05; letter-spacing: -.01em; white-space: nowrap; }
+.pp-card-mid > div { min-width: 0; }
+.pp-big small { font-size: 13px; color: var(--pp-muted); font-weight: 600; margin-right: 3px; }
+.pp-of { font-size: 12.5px; color: var(--pp-muted); margin-top: 4px; }
+.pp-of b { color: var(--pp-fg); }
+.pp-lines { display: grid; gap: 6px; border-top: 1px dashed var(--pp-line); padding-top: 10px; font-size: 12.5px; color: var(--pp-muted); }
+.pp-line { display: flex; justify-content: space-between; gap: 8px; }
+.pp-line b { color: var(--pp-fg); text-align: right; }
+.pp-pos { color: var(--pp-ok) !important; }
+.pp-neg { color: var(--pp-bad) !important; }
+
+.pp-ytd { display: grid; gap: 10px; background: var(--pp-panel); border: 1px solid var(--pp-line); border-radius: 10px; padding: 16px; }
+.pp-ytd-row { display: grid; grid-template-columns: minmax(110px, 9rem) minmax(120px, 1fr) 4.2rem minmax(0, 1.6fr); gap: 12px; align-items: center; }
+.pp-ytd-name { font-size: 13px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.pp-ytd-bar { position: relative; height: 16px; background: var(--pp-panel2); border-radius: 4px; border: 1px solid var(--pp-line); }
+.pp-ytd-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 3px; }
+.pp-ytd-pct { font-size: 20px; font-weight: 900; text-align: right; }
+.pp-ytd-num { font-size: 12.5px; color: var(--pp-muted); }
+.pp-ytd-num b { color: var(--pp-fg); }
+@media (max-width: 760px) { .pp-ytd-row { grid-template-columns: 1fr 4rem; } .pp-ytd-bar { grid-column: 1 / -1; grid-row: 2; } .pp-ytd-num { grid-column: 1 / -1; } }
+.pp-ysum { display: flex; gap: 12px; align-items: flex-start; background: linear-gradient(90deg, rgba(255,176,32,.14), rgba(255,176,32,0) 70%); border: 1px solid rgba(255,176,32,.45); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+.pp-ysum-tag { flex: none; font-size: 11px; font-weight: 900; letter-spacing: .14em; text-transform: uppercase; background: var(--pp-ue); color: #111; border-radius: 4px; padding: 3px 7px; }
+.pp-ysum p { margin: 0; font-size: 14.5px; line-height: 1.5; color: var(--pp-fg); max-width: 90ch; }
+.pp-ycards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15.5rem), 1fr)); }
+.pp-ycard { --pp-k: var(--pp-ue); position: relative; overflow: hidden; background: radial-gradient(120% 90% at 100% 0%, color-mix(in srgb, var(--pp-k) 16%, transparent), transparent 60%), var(--pp-panel); border: 1px solid var(--pp-line); border-radius: 12px; padding: 16px; display: grid; gap: 10px; min-width: 0; }
+.pp-ycard[data-k="ue"] { --pp-k: var(--pp-ue); } .pp-ycard[data-k="rev"] { --pp-k: var(--pp-rev); } .pp-ycard[data-k="cpus"] { --pp-k: var(--pp-cpus); } .pp-ycard[data-k="psdn"] { --pp-k: var(--pp-psdn); }
+.pp-ycard::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--pp-k); }
+.pp-ycard-top { display: flex; justify-content: space-between; align-items: baseline; }
+.pp-ycard-top .pp-card-name { color: var(--pp-k); margin: 0; }
+.pp-ycard-unit { font-size: 11px; color: var(--pp-dim); letter-spacing: .1em; text-transform: uppercase; }
+.pp-ycard-mid { display: grid; grid-template-columns: 104px 1fr; gap: 12px; align-items: center; }
+.pp-yring { width: 104px; height: 104px; }
+.pp-ycard-nums { display: grid; gap: 2px; min-width: 0; }
+.pp-ylab { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--pp-dim); font-weight: 700; }
+.pp-yval { font-size: clamp(18px, 1.8vw, 24px); font-weight: 900; line-height: 1.1; white-space: nowrap; margin-bottom: 4px; }
+.pp-ytgt { font-size: 14px; font-weight: 700; color: var(--pp-muted); }
+.pp-ygap { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 9px 12px; border-radius: 8px; background: var(--pp-panel2); border: 1px solid var(--pp-line); }
+.pp-ygap b { font-size: 18px; font-weight: 900; text-align: right; white-space: nowrap; }
+.pp-ycard.is-ok .pp-ygap { border-color: rgba(52,211,153,.5); background: rgba(52,211,153,.08); }
+.pp-ycard.is-warn .pp-ygap { border-color: rgba(251,191,36,.5); background: rgba(251,191,36,.08); }
+.pp-ycard.is-bad .pp-ygap { border-color: rgba(248,113,113,.55); background: rgba(248,113,113,.08); }
+.pp-yspark { height: 44px; position: relative; }
+.pp-yfoot { margin: 0; font-size: 12px; color: var(--pp-muted); }
+.pp-yfoot b { color: var(--pp-fg); }
+.pp-ydeep-head { display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+.pp-ksel { display: flex; gap: 6px; flex-wrap: wrap; }
+.pp-kbtn { font: inherit; font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--pp-muted); background: var(--pp-panel2); border: 1px solid var(--pp-line); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+.pp-kbtn:hover { color: var(--pp-fg); }
+.pp-kbtn:focus-visible { outline: 2px solid var(--pp-ue); outline-offset: 2px; }
+.pp-kbtn[aria-pressed="true"][data-k="ue"] { background: var(--pp-ue); color: #111; border-color: var(--pp-ue); }
+.pp-kbtn[aria-pressed="true"][data-k="rev"] { background: var(--pp-rev); color: #111; border-color: var(--pp-rev); }
+.pp-kbtn[aria-pressed="true"][data-k="cpus"] { background: var(--pp-cpus); color: #111; border-color: var(--pp-cpus); }
+.pp-kbtn[aria-pressed="true"][data-k="psdn"] { background: var(--pp-psdn); color: #111; border-color: var(--pp-psdn); }
+.pp-alist { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); min-height: 80px; }
+.pp-acard { background: var(--pp-panel2); border: 1px solid var(--pp-line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 8px; border-top: 3px solid var(--pp-dim); }
+.pp-acard-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.pp-acard-top strong { font-size: 13.5px; letter-spacing: .06em; text-transform: uppercase; }
+.pp-achip { font-size: 11px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; padding: 2px 8px; border-radius: 4px; border: 1px solid currentColor; }
+.pp-acard ul { margin: 0; padding-left: 18px; display: grid; gap: 5px; }
+.pp-acard li { font-size: 13px; color: var(--pp-muted); line-height: 1.45; }
+.pp-acard li b { color: var(--pp-fg); }
+.pp-yhead { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+.pp-yhead .pp-h2, .pp-yhead h3 { margin: 0; }
+.pp-ytoggle { font: inherit; font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--pp-ue); background: transparent; border: 1px solid var(--pp-ue); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.pp-ytoggle:hover { background: rgba(255,176,32,.12); }
+.pp-ytoggle:focus-visible { outline: 2px solid var(--pp-ue); outline-offset: 2px; }
+#ytd.is-collapsed { padding-bottom: 4px; border-bottom: 1px dashed var(--pp-line); }
+.pp-tabs { display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--pp-line); padding-bottom: 10px; }
+.pp-tab { font: inherit; font-size: 13px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--pp-muted); background: var(--pp-panel); border: 1px solid var(--pp-line); border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+.pp-tab:hover { color: var(--pp-fg); border-color: var(--pp-dim); }
+.pp-tab:focus-visible { outline: 2px solid var(--pp-ue); outline-offset: 2px; }
+.pp-tab[aria-selected="true"] { background: var(--pp-ue); color: #111; border-color: var(--pp-ue); }
+
+.pp-grid2 { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); }
+.pp-box { background: var(--pp-panel); border: 1px solid var(--pp-line); border-radius: 10px; padding: 16px; min-width: 0; position: relative; }
+.pp-box h3 { margin: 0; font-size: 14px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.pp-box .pp-note { margin: 3px 0 10px; font-size: 12px; color: var(--pp-dim); }
+.pp-chart { position: relative; min-height: 230px; }
+.pp-legend { display: flex; gap: 14px; font-size: 12px; color: var(--pp-muted); margin-top: 6px; flex-wrap: wrap; }
+.pp-sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.pp-tip { position: absolute; pointer-events: none; background: #0b0e12; border: 1px solid var(--pp-dim); border-radius: 6px; padding: 6px 9px; font-size: 12px; color: var(--pp-fg); box-shadow: 0 6px 20px rgba(0,0,0,.5); white-space: nowrap; z-index: 5; }
+.pp-tip .t { color: var(--pp-muted); margin-bottom: 2px; }
+
+.pp-heat { display: grid; grid-template-columns: minmax(90px, 1.4fr) repeat(6, minmax(44px, 1fr)); gap: 4px; min-height: 180px; }
+.pp-heat-scroll { overflow-x: auto; }
+.pp-heat-y { grid-template-columns: minmax(90px, 1.3fr) repeat(12, minmax(44px, 1fr)); min-width: 680px; }
+.pp-hc { padding: 9px 6px; border-radius: 5px; text-align: center; font-weight: 800; font-size: 14px; }
+.pp-hh { font-size: 11px; letter-spacing: .1em; color: var(--pp-muted); text-transform: uppercase; text-align: center; padding: 4px; font-weight: 700; }
+.pp-hk { font-size: 12px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; display: flex; align-items: center; padding-left: 4px; }
+.pp-key { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--pp-muted); margin-top: 10px; }
+
+.pp-daily { display: grid; gap: 14px; }
+.pp-drow { display: grid; gap: 6px; }
+.pp-drow-top { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--pp-muted); }
+.pp-drow-top strong { color: var(--pp-fg); letter-spacing: .05em; text-transform: uppercase; }
+.pp-dtrack { position: relative; height: 14px; background: var(--pp-panel2); border-radius: 4px; border: 1px solid var(--pp-line); }
+.pp-dfill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; width: 0; }
+.pp-dmark { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--pp-fg); left: 66.6667%; }
+.pp-dmark::after { content: "Target"; position: absolute; top: -16px; left: -16px; font-size: 10px; color: var(--pp-muted); }
+
+.pp-ops { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); }
+.pp-wip { display: grid; gap: 10px; }
+.pp-wip-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 10px 12px; background: var(--pp-panel2); border-radius: 8px; border: 1px solid var(--pp-line); }
+.pp-wip-row span { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--pp-muted); font-weight: 700; }
+.pp-wip-row b { font-size: 20px; font-weight: 800; }
+.pp-wip-row.tot { border-color: var(--pp-ue); }
+.pp-wip-row.tot b { color: var(--pp-ue); }
+
+.pp-pdca-steps { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); }
+.pp-step { background: var(--pp-panel); border: 1px solid var(--pp-line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 4px; }
+.pp-step .l { font-size: 26px; font-weight: 900; line-height: 1; color: var(--pp-ue); }
+.pp-step .n { font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.pp-step p { margin: 0; font-size: 12.5px; color: var(--pp-muted); }
+.pp-cols { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); }
+.pp-col { border-radius: 10px; padding: 16px; background: var(--pp-panel); border: 1px solid var(--pp-line); min-width: 0; }
+.pp-col.keep { border-top: 4px solid var(--pp-ok); }
+.pp-col.fix { border-top: 4px solid var(--pp-bad); }
+.pp-col h3 { margin: 0 0 10px; font-size: 16px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; }
+.pp-col.keep h3 { color: var(--pp-ok); }
+.pp-col.fix h3 { color: var(--pp-bad); }
+.pp-list { display: grid; gap: 10px; min-height: 60px; }
+.pp-item { background: var(--pp-panel2); border: 1px solid var(--pp-line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; }
+.pp-item-top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.pp-item-top strong { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; }
+.pp-item-top em { font-style: normal; font-weight: 900; font-size: 15px; }
+.pp-item p { margin: 0; font-size: 13px; color: var(--pp-muted); line-height: 1.45; }
+.pp-empty { font-size: 13px; color: var(--pp-dim); }
+.pp-foot { font-size: 12px; color: var(--pp-dim); border-top: 1px solid var(--pp-line); padding-top: 12px; }
+.pp-foot b { color: var(--pp-muted); }
+.pp-tahun { display: grid; gap: 8px; max-width: 70ch; }
+.pp-tahun p { margin: 0; color: var(--pp-muted); font-size: 14px; line-height: 1.5; }
+.pp .dash-skeleton { min-height: 1em; }
+.pp [hidden] { display: none !important; }
+.pp [data-dash-source-state=refreshing] { opacity: .5; transition: opacity var(--cds-dur-slow); }
+.pp [data-dash-source-state=empty] { color: transparent; }
+@media (max-width: 480px) {
+  .pp-card-mid { grid-template-columns: 96px 1fr; }
+  .pp-gauge { width: 96px; height: 64px; }
+}
+</style>
+
+<div class="pp" id="kpi-bp">
+  <div class="pp-hazard"></div>
+  <header class="pp-band" id="ringkasan">
+    <p class="pp-eyebrow">Perintis Perkasa · Body &amp; Paint</p>
+    <h1 class="pp-title">Dashboard KPI <span data-draw="cell" data-fmt="text" data-source="ue_all" data-field="text" data-where="grp=info&amp;key=bulan&amp;period=-">—</span> <span data-draw="cell" data-fmt="year" data-source="ue_all" data-field="value" data-where="grp=info&amp;key=tahun&amp;period=-">—</span></h1>
+    <p class="pp-take"><b data-draw="calc" data-fmt="int" data-source="ringkas" data-field="di_atas" data-where="">—</b> dari <b data-draw="calc" data-fmt="int" data-source="ringkas" data-field="total" data-where="">—</b> KPI utama sudah mencapai target bulan ini. Kartu merah dan kolom <b>Tingkatkan</b> di bagian PDCA adalah prioritas sisa hari kerja.</p>
+    <div class="pp-meta">
+      <label class="pp-pick" for="pilih-bulan">Bulan <select id="pilih-bulan" data-draw="bulanpick" data-source="ue_all"></select></label>
+      <span class="pp-chip">Hari ini <b data-draw="cell" data-fmt="text" data-source="ue_all" data-field="text" data-where="grp=info&amp;key=hari_ini&amp;period=-">—</b></span>
+      <span class="pp-chip">HK berjalan <b data-draw="cell" data-fmt="dec" data-source="ue_all" data-field="value" data-where="grp=info&amp;key=hk_jalan&amp;period=-">—</b> / <b data-draw="cell" data-fmt="dec" data-source="ue_all" data-field="value" data-where="grp=info&amp;key=hk&amp;period=-">—</b> hari</span>
+      <span class="pp-chip">Sisa HK <b data-draw="cell" data-fmt="dec" data-source="ue_all" data-field="value" data-where="grp=info&amp;key=sisa_hk&amp;period=-">—</b> hari</span>
+      <div class="pp-prog">
+        <span class="pp-prog-label">Hari kerja terpakai</span>
+        <div class="pp-prog-track"><div class="pp-prog-fill" data-draw="hkbar" data-source="ue_all"></div></div>
+      </div>
+    </div>
+  </header>
+
+  <div class="pp-wrap">
+    <section id="bulanan" aria-labelledby="h-bulanan">
+      <h2 class="pp-h2" id="h-bulanan">Pencapaian bulan berjalan</h2>
+      <p class="pp-sub">Bulan yang dipilih di menu Bulan, akumulasi dari tanggal 1 sampai hari ini. Hijau ≥ 100% target, kuning 90–99%, merah di bawah 90%.</p>
+      <div class="pp-cards">
+
+        <article class="pp-card" data-k="ue" id="card-ue">
+          <div class="pp-card-head">
+            <div><p class="pp-card-name">Unit Entry</p><p class="pp-card-def">Unit masuk bengkel</p></div>
+            <span class="pp-badge" data-st="ok">Pertahankan</span><span class="pp-badge" data-st="warn">Hampir</span><span class="pp-badge" data-st="bad">Tingkatkan</span>
+          </div>
+          <div class="pp-card-mid">
+            <div class="pp-gauge" data-draw="gauge" data-k="ue" data-source="ue_all"></div>
+            <div>
+              <div class="pp-big"><span data-draw="cell" data-fmt="int" data-source="ue_all" data-field="value" data-where="grp=ue&amp;key=actual&amp;period=MTD">—</span> <small>unit</small></div>
+              <div class="pp-of">Target <b data-draw="cell" data-fmt="int" data-source="ue_all" data-field="value" data-where="grp=ue&amp;key=target&amp;period=MTD">—</b> unit</div>
+            </div>
+          </div>
+          <div class="pp-lines">
+            <div class="pp-line">Surplus / minus <b data-draw="cell" data-fmt="sint" data-source="ue_all" data-field="value" data-where="grp=ue&amp;key=gap&amp;period=MTD">—</b></div>
+            <div class="pp-line">Rata-rata per HK <b data-draw="calc" data-fmt="dec1" data-source="kpi" data-field="rata_harian" data-where="kpi=ue">—</b></div>
+            <div class="pp-line">Target per HK <b data-draw="calc" data-fmt="dec1" data-source="kpi" data-field="target_harian" data-where="kpi=ue">—</b></div>
+            <div class="pp-line">Proyeksi akhir bulan <b data-draw="calc" data-fmt="pct" data-source="kpi" data-field="proyeksi_pct" data-where="kpi=ue">—</b></div>
+          </div>
+        </article>
+
+        <article class="pp-card" data-k="rev" id="card-rev">
+          <div class="pp-card-head">
+            <div><p class="pp-card-name">Revenue total</p><p class="pp-card-def">Omzet jasa + barang (Rp)</p></div>
+            <span class="pp-badge" data-st="ok">Pertahankan</span><span class="pp-badge" data-st="warn">Hampir</span><span class="pp-badge" data-st="bad">Tingkatkan</span>
+          </div>
+          <div class="pp-card-mid">
+            <div class="pp-gauge" data-draw="gauge" data-k="rev" data-source="ue_all"></div>
+            <div>
+              <div class="pp-big"><small>Rp</small><span data-draw="cell" data-fmt="int" data-source="ue_all" data-field="value" data-where="grp=rev&amp;key=actual&amp;period=MTD">—</span></div>
+              <div class="pp-of">Target Rp <b data-draw="cell" data-fmt="int" data-source="ue_all" data-field="value" data-where="grp=rev&amp;key=target&amp;period=MTD">—</b></div>
+            </div>
+          </div>
+          <div class="pp-lines">
+            <div class="pp-line">Surplus / minus <b data-draw="cell" data-fmt="srp" data-source="ue_all" data-field="value" data-where="grp=rev&amp;key=gap&amp;period=MTD">—</b></div>
+            <div class="pp-line">Rata-rata per HK <b data-draw="calc" data-fmt="rpc" data-source="kpi" data-field="rata_harian" data-where="kpi=rev">—</b></div>
+            <div class="pp-line">Target per HK <b data-draw="calc" data-fmt="rpc" data-source="kpi" data-field="target_harian" data-where="kpi=rev">—</b></div>
+            <div class="pp-line">Proyeksi akhir bulan <b data-draw="calc" data-fmt="pct" data-source="kpi" data-field="proyeksi_pct" data-where="kpi=rev">—</b></div>
+          </div>
+        </article>
+
+        <article class="pp-card" data-k="cpus" id="card-cpus">
+          <div class="pp-card-head">
+            <div><p class="pp-card-name">CPUS</p><p class="pp-card-def">Unit selesai dibayar pelanggan</p></div>
+            <span class="pp-badge" data-st="ok">Pertahankan</span><span class="pp-badge" data-st="warn">Hampir</span><span class="pp-badge" data-st="bad">Tingkatkan</span>
+          </div>
+          <div class="pp-card-mid">
+            <div class="pp-gauge" data-draw="gauge" data-k="cpus" data-source="ue_all"></div>
+            <div>
+              <div class="pp-big"><span data-draw="cell" data-fmt="int" data-source="ue_all" data-field="value" data-where="grp=cpus&amp;key=actual&amp;period=MTD">—</span> <small>unit</small></div>
+              <div class="pp-of">Target <b data-draw="cell" data-fmt="int" data-source="ue_all" data-field="value" data-where="grp=cpus&amp;key=target&amp;period=MTD">—</b> · ASIIST <b data-draw="cell" data-fmt="int" data-source="ue_all" data-field="value" data-where="grp=cpus&amp;key=asiist&amp;period=MTD">—</b></div>
+            </div>
+          </div>
+          <div class="pp-lines">
+            <div class="pp-line">Surplus / minus <b data-draw="cell" data-fmt="sint" data-source="ue_all" data-field="value" data-where="grp=cpus&amp;key=gap&amp;period=MTD">—</b></div>
+            <div class="pp-line">Rata-rata per HK <b data-draw="calc" data-fmt="dec1" data-source="kpi" data-field="rata_harian" data-where="kpi=cpus">—</b></div>
+            <div class="pp-line">Target per HK <b data-draw="calc" data-fmt="dec1" data-source="kpi" data-field="target_harian" data-where="kpi=cpus">—</b></div>
+            <div class="pp-line">Proyeksi akhir bulan <b data-draw="calc" data-fmt="pct" data-source="kpi" data-field="proyeksi_pct" data-where="kpi=cpus">—</b></div>
+          </div>
+        </article>
+
+        <article class="pp-card" data-k="psdn" id="card-psdn">
+          <div class="pp-card-head">
+            <div><p class="pp-card-name">PSDN</p><p class="pp-card-def">Nilai PSDN (Rp)</p></div>
+            <span class="pp-badge" data-st="ok">Pertahankan</span><span class="pp-badge" data-st="warn">Hampir</span><span class="pp-badge" data-st="bad">Tingkatkan</span>
+          </div>
+          <div class="pp-card-mid">
+            <div class="pp-gauge" data-draw="gauge" data-k="psdn" data-source="ue_all"></div>
+            <div>
+              <div class="pp-big"><small>Rp</small><span data-draw="cell" data-fmt="int" data-source="ue_all" data-field="value" data-where="grp=psdn&amp;key=actual&amp;period=MTD">—</span></div>
+              <div class="pp-of">Target Rp <b data-draw="cell" data-fmt="int" data-source="ue_all" data-field="value" data-where="grp=psdn&amp;key=target&amp;period=MTD">—</b></div>
+            </div>
+          </div>
+          <div class="pp-lines">
+            <div class="pp-line">Surplus / minus <b data-draw="cell" data-fmt="srp" data-source="ue_all" data-field="value" data-where="grp=psdn&amp;key=gap&amp;period=MTD">—</b></div>
+            <div class="pp-line">Rata-rata per HK <b data-draw="calc" data-fmt="rpc" data-source="kpi" data-field="rata_harian" data-where="kpi=psdn">—</b></div>
+            <div class="pp-line">Target per HK <b data-draw="calc" data-fmt="rpc" data-source="kpi" data-field="target_harian" data-where="kpi=psdn">—</b></div>
+            <div class="pp-line">Proyeksi akhir bulan <b data-draw="calc" data-fmt="pct" data-source="kpi" data-field="proyeksi_pct" data-where="kpi=psdn">—</b></div>
+          </div>
+        </article>
+
+      </div>
+
+      <div class="pp-box" id="analisa-bulan" style="margin-top:14px">
+        <div class="pp-yhead">
+          <h3>Analisa bulan berjalan</h3>
+          <button type="button" class="pp-ytoggle pp-btoggle" aria-expanded="true" aria-controls="analisa-bulan-body"><span class="pp-yt-hide">Sembunyikan ▲</span><span class="pp-yt-show" hidden>Tampilkan ▼</span></button>
+        </div>
+        <div id="analisa-bulan-body">
+          <p class="pp-note">Dibuat otomatis dari sheet Dashboard bulan yang dipilih: target vs aktual, pola mingguan, laju per hari kerja, dan kebutuhan per hari.</p>
+          <div class="pp-ysum"><span class="pp-ysum-tag">Ringkasan</span><p data-draw="bsummary" data-source="analisa_bulan">—</p></div>
+          <div class="pp-alist" data-draw="banalisa" data-source="analisa_bulan"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="ytd" aria-labelledby="h-ytd">
+      <div class="pp-yhead">
+        <h2 class="pp-h2" id="h-ytd">Year to date: <span data-draw="ytdrange" data-source="ytd">—</span></h2>
+        <button type="button" class="pp-ytoggle" id="ytd-toggle" aria-expanded="true" aria-controls="ytd-body"><span class="pp-yt-hide">Sembunyikan ▲</span><span class="pp-yt-show" hidden>Tampilkan ▼</span></button>
+      </div>
+      <div id="ytd-body">
+      <p class="pp-sub">Akumulasi target dan pencapaian dari Januari sampai bulan yang dipilih. Bulan yang sheet Dashboard-nya kosong tidak dihitung.</p>
+      <div class="pp-ysum" id="ytd-ringkas">
+        <span class="pp-ysum-tag">Ringkasan</span>
+        <p data-draw="ysummary" data-source="analisa_ytd">—</p>
+      </div>
+      <div class="pp-ycards">
+        <article class="pp-ycard" data-k="ue" id="ytd-ue">
+          <div class="pp-ycard-top"><p class="pp-card-name">Unit Entry</p><span class="pp-ycard-unit">unit</span></div>
+          <div class="pp-ycard-mid">
+            <div class="pp-yring" data-draw="ygauge" data-k="ue" data-source="ytd"></div>
+            <div class="pp-ycard-nums">
+              <span class="pp-ylab">Aktual</span><b class="pp-yval" data-draw="calc" data-fmt="int" data-source="ytd" data-field="actual" data-where="kpi=ue">—</b>
+              <span class="pp-ylab">Target</span><span class="pp-ytgt" data-draw="calc" data-fmt="int" data-source="ytd" data-field="target" data-where="kpi=ue">—</span>
+            </div>
+          </div>
+          <div class="pp-ygap"><span class="pp-ylab">Surplus / kekurangan</span><b data-draw="calc" data-fmt="sint" data-source="ytd" data-field="gap" data-where="kpi=ue">—</b></div>
+          <div class="pp-yspark" data-draw="yspark" data-k="ue" data-source="ytd"></div>
+          <p class="pp-yfoot"><b data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_ok" data-where="kpi=ue">—</b> dari <b data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_data" data-where="kpi=ue">—</b> bulan capai target</p>
+        </article>
+        <article class="pp-ycard" data-k="rev" id="ytd-rev">
+          <div class="pp-ycard-top"><p class="pp-card-name">Revenue total</p><span class="pp-ycard-unit">Rp</span></div>
+          <div class="pp-ycard-mid">
+            <div class="pp-yring" data-draw="ygauge" data-k="rev" data-source="ytd"></div>
+            <div class="pp-ycard-nums">
+              <span class="pp-ylab">Aktual</span><b class="pp-yval" data-draw="calc" data-fmt="rpc" data-source="ytd" data-field="actual" data-where="kpi=rev">—</b>
+              <span class="pp-ylab">Target</span><span class="pp-ytgt" data-draw="calc" data-fmt="rpc" data-source="ytd" data-field="target" data-where="kpi=rev">—</span>
+            </div>
+          </div>
+          <div class="pp-ygap"><span class="pp-ylab">Surplus / kekurangan</span><b data-draw="calc" data-fmt="srpc" data-source="ytd" data-field="gap" data-where="kpi=rev">—</b></div>
+          <div class="pp-yspark" data-draw="yspark" data-k="rev" data-source="ytd"></div>
+          <p class="pp-yfoot"><b data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_ok" data-where="kpi=rev">—</b> dari <b data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_data" data-where="kpi=rev">—</b> bulan capai target</p>
+        </article>
+        <article class="pp-ycard" data-k="cpus" id="ytd-cpus">
+          <div class="pp-ycard-top"><p class="pp-card-name">CPUS</p><span class="pp-ycard-unit">unit</span></div>
+          <div class="pp-ycard-mid">
+            <div class="pp-yring" data-draw="ygauge" data-k="cpus" data-source="ytd"></div>
+            <div class="pp-ycard-nums">
+              <span class="pp-ylab">Aktual</span><b class="pp-yval" data-draw="calc" data-fmt="int" data-source="ytd" data-field="actual" data-where="kpi=cpus">—</b>
+              <span class="pp-ylab">Target</span><span class="pp-ytgt" data-draw="calc" data-fmt="int" data-source="ytd" data-field="target" data-where="kpi=cpus">—</span>
+            </div>
+          </div>
+          <div class="pp-ygap"><span class="pp-ylab">Surplus / kekurangan</span><b data-draw="calc" data-fmt="sint" data-source="ytd" data-field="gap" data-where="kpi=cpus">—</b></div>
+          <div class="pp-yspark" data-draw="yspark" data-k="cpus" data-source="ytd"></div>
+          <p class="pp-yfoot"><b data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_ok" data-where="kpi=cpus">—</b> dari <b data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_data" data-where="kpi=cpus">—</b> bulan capai target</p>
+        </article>
+        <article class="pp-ycard" data-k="psdn" id="ytd-psdn">
+          <div class="pp-ycard-top"><p class="pp-card-name">PSDN</p><span class="pp-ycard-unit">Rp</span></div>
+          <div class="pp-ycard-mid">
+            <div class="pp-yring" data-draw="ygauge" data-k="psdn" data-source="ytd"></div>
+            <div class="pp-ycard-nums">
+              <span class="pp-ylab">Aktual</span><b class="pp-yval" data-draw="calc" data-fmt="rpc" data-source="ytd" data-field="actual" data-where="kpi=psdn">—</b>
+              <span class="pp-ylab">Target</span><span class="pp-ytgt" data-draw="calc" data-fmt="rpc" data-source="ytd" data-field="target" data-where="kpi=psdn">—</span>
+            </div>
+          </div>
+          <div class="pp-ygap"><span class="pp-ylab">Surplus / kekurangan</span><b data-draw="calc" data-fmt="srpc" data-source="ytd" data-field="gap" data-where="kpi=psdn">—</b></div>
+          <div class="pp-yspark" data-draw="yspark" data-k="psdn" data-source="ytd"></div>
+          <p class="pp-yfoot"><b data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_ok" data-where="kpi=psdn">—</b> dari <b data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_data" data-where="kpi=psdn">—</b> bulan capai target</p>
+        </article>
+      </div>
+
+      <div class="pp-box pp-ydeep" id="ytd-detail" style="margin-top:14px">
+        <div class="pp-ydeep-head">
+          <div><h3>Akumulasi aktual vs target</h3><p class="pp-note">Area hijau = surplus terhadap target akumulasi, merah = kekurangan. Garis putus-putus = target akumulasi.</p></div>
+          <div class="pp-ksel" role="group" aria-label="Pilih KPI">
+            <button type="button" class="pp-kbtn" data-k="ue" aria-pressed="true">Unit Entry</button>
+            <button type="button" class="pp-kbtn" data-k="rev" aria-pressed="false">Revenue</button>
+            <button type="button" class="pp-kbtn" data-k="cpus" aria-pressed="false">CPUS</button>
+            <button type="button" class="pp-kbtn" data-k="psdn" aria-pressed="false">PSDN</button>
+          </div>
+        </div>
+        <div class="pp-chart" data-draw="ycombo" data-source="ytd" style="min-height:300px"></div>
+        <h3 style="margin-top:18px">Surplus / kekurangan per bulan</h3>
+        <p class="pp-note">Batang = selisih aktual − target bulan itu. Garis kuning = surplus/kekurangan akumulasi sejak Januari.</p>
+        <div class="pp-chart" data-draw="ygapbars" data-source="tahun" style="min-height:260px"></div>
+        <div class="pp-legend"><span><i class="pp-sw" style="background:var(--pp-ok)"></i>Surplus</span><span><i class="pp-sw" style="background:var(--pp-bad)"></i>Kekurangan</span><span><i class="pp-sw" style="background:var(--pp-ue)"></i>Akumulasi</span></div>
+      </div>
+
+      <div class="pp-box" id="ytd-analisa" style="margin-top:14px">
+        <h3>Analisa YTD</h3>
+        <p class="pp-note">Dibuat otomatis dari angka bulanan. Kebutuhan per bulan dihitung dari rata-rata target bulanan yang sudah ada.</p>
+        <div class="pp-alist" data-draw="yanalisa" data-source="analisa_ytd"></div>
+      </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-periode" id="periode">
+      <h2 class="pp-h2" id="h-periode">Lihat per periode</h2>
+      <div class="pp-tabs" role="tablist" aria-label="Periode">
+        <button class="pp-tab" type="button" role="tab" id="tab-mingguan" data-tab="mingguan" aria-selected="true">Mingguan</button>
+        <button class="pp-tab" type="button" role="tab" id="tab-harian" data-tab="harian" aria-selected="false">Harian</button>
+        <button class="pp-tab" type="button" role="tab" id="tab-tahunan" data-tab="tahunan" aria-selected="false">Tahunan</button>
+      </div>
+
+      <div class="pp-panel" data-panel="mingguan" id="mingguan" style="display:grid;gap:14px;margin-top:14px">
+        <div class="pp-box" id="heatmap">
+          <h3>Peta pencapaian mingguan</h3>
+          <p class="pp-note">Persentase aktual terhadap target tiap minggu. W5 masih berjalan sampai akhir bulan.</p>
+          <div class="pp-heat-scroll"><div class="pp-heat" data-draw="heat" data-source="ue_all"></div></div>
+          <div class="pp-key"><span><i class="pp-sw" style="background:var(--pp-ok)"></i>≥ 100%</span><span><i class="pp-sw" style="background:var(--pp-warn)"></i>90–99%</span><span><i class="pp-sw" style="background:var(--pp-bad)"></i>&lt; 90%</span></div>
+        </div>
+        <div class="pp-grid2">
+          <div class="pp-box" id="chart-ue"><h3>Unit Entry per minggu</h3><p class="pp-note">Target vs aktual (unit)</p><div class="pp-chart" data-draw="weekly" data-k="ue" data-source="ue_all"></div><div class="pp-legend"><span><i class="pp-sw" style="background:var(--pp-target)"></i>Target</span><span><i class="pp-sw" style="background:var(--pp-ue)"></i>Aktual</span></div></div>
+          <div class="pp-box" id="chart-rev"><h3>Revenue total per minggu</h3><p class="pp-note">Target vs aktual (Rp)</p><div class="pp-chart" data-draw="weekly" data-k="rev" data-source="ue_all"></div><div class="pp-legend"><span><i class="pp-sw" style="background:var(--pp-target)"></i>Target</span><span><i class="pp-sw" style="background:var(--pp-rev)"></i>Aktual</span></div></div>
+          <div class="pp-box" id="chart-cpus"><h3>CPUS per minggu</h3><p class="pp-note">Target vs aktual (unit)</p><div class="pp-chart" data-draw="weekly" data-k="cpus" data-source="ue_all"></div><div class="pp-legend"><span><i class="pp-sw" style="background:var(--pp-target)"></i>Target</span><span><i class="pp-sw" style="background:var(--pp-cpus)"></i>Aktual</span></div></div>
+          <div class="pp-box" id="chart-psdn"><h3>PSDN per minggu</h3><p class="pp-note">Target vs aktual (Rp)</p><div class="pp-chart" data-draw="weekly" data-k="psdn" data-source="ue_all"></div><div class="pp-legend"><span><i class="pp-sw" style="background:var(--pp-target)"></i>Target</span><span><i class="pp-sw" style="background:var(--pp-psdn)"></i>Aktual</span></div></div>
+        </div>
+      </div>
+
+      <div class="pp-panel" data-panel="harian" id="harian" hidden style="margin-top:14px">
+        <div class="pp-grid2">
+          <div class="pp-box" id="laju-harian">
+            <h3>Laju harian vs target harian</h3>
+            <p class="pp-note">Rata-rata per hari kerja berjalan dibanding target per hari kerja. Garis putih = 100% target.</p>
+            <div class="pp-daily">
+              <div class="pp-drow"><div class="pp-drow-top"><strong style="color:var(--pp-ue)">Unit Entry</strong><span><b data-draw="calc" data-fmt="dec1" data-source="kpi" data-field="rata_harian" data-where="kpi=ue">—</b> / hari · target <b data-draw="calc" data-fmt="dec1" data-source="kpi" data-field="target_harian" data-where="kpi=ue">—</b></span></div><div class="pp-dtrack"><div class="pp-dfill" data-draw="dbar" data-k="ue" data-source="kpi"></div><div class="pp-dmark"></div></div></div>
+              <div class="pp-drow"><div class="pp-drow-top"><strong style="color:var(--pp-rev)">Revenue total</strong><span><b data-draw="calc" data-fmt="rpc" data-source="kpi" data-field="rata_harian" data-where="kpi=rev">—</b> / hari · target <b data-draw="calc" data-fmt="rpc" data-source="kpi" data-field="target_harian" data-where="kpi=rev">—</b></span></div><div class="pp-dtrack"><div class="pp-dfill" data-draw="dbar" data-k="rev" data-source="kpi"></div><div class="pp-dmark"></div></div></div>
+              <div class="pp-drow"><div class="pp-drow-top"><strong style="color:var(--pp-cpus)">CPUS</strong><span><b data-draw="calc" data-fmt="dec1" data-source="kpi" data-field="rata_harian" data-where="kpi=cpus">—</b> / hari · target <b data-draw="calc" data-fmt="dec1" data-source="kpi" data-field="target_harian" data-where="kpi=cpus">—</b></span></div><div class="pp-dtrack"><div class="pp-dfill" data-draw="dbar" data-k="cpus" data-source="kpi"></div><div class="pp-dmark"></div></div></div>
+              <div class="pp-drow"><div class="pp-drow-top"><strong style="color:var(--pp-psdn)">PSDN</strong><span><b data-draw="calc" data-fmt="rpc" data-source="kpi" data-field="rata_harian" data-where="kpi=psdn">—</b> / hari · target <b data-draw="calc" data-fmt="rpc" data-source="kpi" data-field="target_harian" data-where="kpi=psdn">—</b></span></div><div class="pp-dtrack"><div class="pp-dfill" data-draw="dbar" data-k="psdn" data-source="kpi"></div><div class="pp-dmark"></div></div></div>
+            </div>
+          </div>
+          <div class="pp-box" id="sisa-harian">
+            <h3>Sisa target per hari</h3>
+            <p class="pp-note">Dari sheet: selisih bulan ini dibagi sisa hari kerja. Minus = harus dikejar tiap hari, plus = sudah aman.</p>
+            <div class="pp-wip">
+              <div class="pp-wip-row"><span>Unit Entry</span><b data-draw="cell" data-fmt="sint" data-source="ue_all" data-field="value" data-where="grp=sisa&amp;key=ue&amp;period=-">—</b></div>
+              <div class="pp-wip-row"><span>Revenue total</span><b data-draw="cell" data-fmt="srp" data-source="ue_all" data-field="value" data-where="grp=sisa&amp;key=rev&amp;period=-">—</b></div>
+              <div class="pp-wip-row"><span>CPUS</span><b data-draw="cell" data-fmt="sint" data-source="ue_all" data-field="value" data-where="grp=sisa&amp;key=cpus&amp;period=-">—</b></div>
+              <div class="pp-wip-row"><span>PSDN</span><b data-draw="cell" data-fmt="srp" data-source="ue_all" data-field="value" data-where="grp=sisa&amp;key=psdn&amp;period=-">—</b></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="pp-panel" data-panel="tahunan" id="tahunan" hidden style="margin-top:14px">
+        <div style="display:grid;gap:14px">
+          <p class="pp-sub" style="margin:0">Dibaca dari semua file <b>"NN UNIT ENTRY … 2026"</b> di Drive (sheet Dashboard tiap file). File November dan Desember otomatis ikut begitu dibuat. Oktober masih berjalan.</p>
+          <div class="pp-cards">
+            <article class="pp-card" data-k="ue" data-y="1"><div class="pp-card-head"><div><p class="pp-card-name">Unit Entry</p><p class="pp-card-def">YTD s/d bulan terpilih</p></div></div>
+              <div class="pp-big"><span data-draw="calc" data-fmt="int" data-source="ytd" data-field="actual" data-where="kpi=ue">—</span> <small>unit</small></div>
+              <div class="pp-of">Target <b data-draw="calc" data-fmt="int" data-source="ytd" data-field="target" data-where="kpi=ue">—</b> · <b data-draw="ycell" data-source="ytd" data-field="pct" data-where="kpi=ue">—</b></div>
+              <div class="pp-lines"><div class="pp-line">Bulan capai target <b><span data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_ok" data-where="kpi=ue">—</span> / <span data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_data" data-where="kpi=ue">—</span></b></div></div></article>
+            <article class="pp-card" data-k="rev" data-y="1"><div class="pp-card-head"><div><p class="pp-card-name">Revenue total</p><p class="pp-card-def">YTD s/d bulan terpilih (Rp)</p></div></div>
+              <div class="pp-big"><span data-draw="calc" data-fmt="rpc" data-source="ytd" data-field="actual" data-where="kpi=rev">—</span></div>
+              <div class="pp-of">Target <b data-draw="calc" data-fmt="rpc" data-source="ytd" data-field="target" data-where="kpi=rev">—</b> · <b data-draw="ycell" data-source="ytd" data-field="pct" data-where="kpi=rev">—</b></div>
+              <div class="pp-lines"><div class="pp-line">Bulan capai target <b><span data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_ok" data-where="kpi=rev">—</span> / <span data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_data" data-where="kpi=rev">—</span></b></div></div></article>
+            <article class="pp-card" data-k="cpus" data-y="1"><div class="pp-card-head"><div><p class="pp-card-name">CPUS</p><p class="pp-card-def">YTD s/d bulan terpilih</p></div></div>
+              <div class="pp-big"><span data-draw="calc" data-fmt="int" data-source="ytd" data-field="actual" data-where="kpi=cpus">—</span> <small>unit</small></div>
+              <div class="pp-of">Target <b data-draw="calc" data-fmt="int" data-source="ytd" data-field="target" data-where="kpi=cpus">—</b> · <b data-draw="ycell" data-source="ytd" data-field="pct" data-where="kpi=cpus">—</b></div>
+              <div class="pp-lines"><div class="pp-line">Bulan capai target <b><span data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_ok" data-where="kpi=cpus">—</span> / <span data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_data" data-where="kpi=cpus">—</span></b></div></div></article>
+            <article class="pp-card" data-k="psdn" data-y="1"><div class="pp-card-head"><div><p class="pp-card-name">PSDN</p><p class="pp-card-def">YTD s/d bulan terpilih (Rp)</p></div></div>
+              <div class="pp-big"><span data-draw="calc" data-fmt="rpc" data-source="ytd" data-field="actual" data-where="kpi=psdn">—</span></div>
+              <div class="pp-of">Target <b data-draw="calc" data-fmt="rpc" data-source="ytd" data-field="target" data-where="kpi=psdn">—</b> · <b data-draw="ycell" data-source="ytd" data-field="pct" data-where="kpi=psdn">—</b></div>
+              <div class="pp-lines"><div class="pp-line">Bulan capai target <b><span data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_ok" data-where="kpi=psdn">—</span> / <span data-draw="calc" data-fmt="int" data-source="ytd" data-field="bulan_data" data-where="kpi=psdn">—</span></b></div></div></article>
+          </div>
+          <div class="pp-box" id="tren-tahunan">
+            <h3>Tren pencapaian bulanan</h3>
+            <p class="pp-note">% aktual terhadap target tiap bulan. Garis putus-putus = 100% target.</p>
+            <div class="pp-chart" data-draw="ytrend" data-source="tahun" style="min-height:280px"></div>
+            <div class="pp-legend"><span><i class="pp-sw" style="background:var(--pp-ue)"></i>Unit Entry</span><span><i class="pp-sw" style="background:var(--pp-rev)"></i>Revenue</span><span><i class="pp-sw" style="background:var(--pp-cpus)"></i>CPUS</span><span><i class="pp-sw" style="background:var(--pp-psdn)"></i>PSDN</span></div>
+          </div>
+          <div class="pp-box" id="peta-tahunan">
+            <h3>Peta pencapaian Januari–Desember</h3>
+            <p class="pp-note">Kotak abu-abu = belum ada data di sheet Dashboard bulan itu.</p>
+            <div class="pp-heat-scroll"><div class="pp-heat pp-heat-y" data-draw="yheat" data-source="tahun"></div></div>
+            <p class="pp-note" style="margin-top:10px">Belum ada data: <b data-draw="ymissing" data-source="tahun">—</b></p>
+          </div>
+          <div class="pp-grid2">
+            <div class="pp-box" id="bulanan-ue"><h3>Unit Entry per bulan</h3><p class="pp-note">Target vs aktual (unit)</p><div class="pp-chart" data-draw="ymonth" data-k="ue" data-source="tahun"></div><div class="pp-legend"><span><i class="pp-sw" style="background:var(--pp-target)"></i>Target</span><span><i class="pp-sw" style="background:var(--pp-ue)"></i>Aktual</span></div></div>
+            <div class="pp-box" id="bulanan-rev"><h3>Revenue total per bulan</h3><p class="pp-note">Target vs aktual (Rp)</p><div class="pp-chart" data-draw="ymonth" data-k="rev" data-source="tahun"></div><div class="pp-legend"><span><i class="pp-sw" style="background:var(--pp-target)"></i>Target</span><span><i class="pp-sw" style="background:var(--pp-rev)"></i>Aktual</span></div></div>
+            <div class="pp-box" id="bulanan-cpus"><h3>CPUS per bulan</h3><p class="pp-note">Target vs aktual (unit)</p><div class="pp-chart" data-draw="ymonth" data-k="cpus" data-source="tahun"></div><div class="pp-legend"><span><i class="pp-sw" style="background:var(--pp-target)"></i>Target</span><span><i class="pp-sw" style="background:var(--pp-cpus)"></i>Aktual</span></div></div>
+            <div class="pp-box" id="bulanan-psdn"><h3>PSDN per bulan</h3><p class="pp-note">Target vs aktual (Rp)</p><div class="pp-chart" data-draw="ymonth" data-k="psdn" data-source="tahun"></div><div class="pp-legend"><span><i class="pp-sw" style="background:var(--pp-target)"></i>Target</span><span><i class="pp-sw" style="background:var(--pp-psdn)"></i>Aktual</span></div></div>
+          </div>
+          <div class="pp-cols">
+            <div class="pp-col keep" id="pertahankan-tahunan"><h3>Pertahankan (tahunan)</h3><div class="pp-list" data-draw="pdcay" data-mode="pertahankan" data-source="pdca_tahun"></div></div>
+            <div class="pp-col fix" id="tingkatkan-tahunan"><h3>Tingkatkan (tahunan)</h3><div class="pp-list" data-draw="pdcay" data-mode="tingkatkan" data-source="pdca_tahun"></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-ops" id="operasional">
+      <h2 class="pp-h2" id="h-ops">Kondisi bengkel hari ini</h2>
+      <p class="pp-sub">Unit yang masih di proses, jenis kerusakan, dan nilai pekerjaan yang belum jadi uang.</p>
+      <div class="pp-ops">
+        <div class="pp-box" id="status-unit">
+          <h3>Status unit dalam proses</h3>
+          <p class="pp-note">Total <b data-draw="cell" data-fmt="int" data-source="ue_all" data-field="value" data-where="grp=status&amp;key=total&amp;period=unit">—</b> unit. Panjang batang = jumlah unit, angka kanan = nilai Rp.</p>
+          <div class="pp-chart" data-draw="status" data-source="ue_all" style="min-height:250px"></div>
+        </div>
+        <div class="pp-box" id="jenis-kerusakan">
+          <h3>Jenis kerusakan</h3>
+          <p class="pp-note">Komposisi unit berdasarkan berat kerusakan.</p>
+          <div class="pp-chart" data-draw="donut" data-source="ue_all" style="min-height:230px"></div>
+          <div class="pp-legend"><span><i class="pp-sw" style="background:var(--pp-cpus)"></i>Light</span><span><i class="pp-sw" style="background:var(--pp-ue)"></i>Medium</span><span><i class="pp-sw" style="background:var(--pp-bad)"></i>Heavy</span></div>
+        </div>
+        <div class="pp-box" id="nilai-wip">
+          <h3>Nilai WIP</h3>
+          <p class="pp-note">Nilai pekerjaan yang belum ditagih.</p>
+          <div class="pp-wip">
+            <div class="pp-wip-row"><span>Jasa</span><b data-draw="cell" data-fmt="rp" data-source="ue_all" data-field="value" data-where="grp=wip&amp;key=jasa&amp;period=-">—</b></div>
+            <div class="pp-wip-row"><span>Part</span><b data-draw="cell" data-fmt="rp" data-source="ue_all" data-field="value" data-where="grp=wip&amp;key=part&amp;period=-">—</b></div>
+            <div class="pp-wip-row tot"><span>Total</span><b data-draw="cell" data-fmt="rp" data-source="ue_all" data-field="value" data-where="grp=wip&amp;key=total&amp;period=-">—</b></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-pdca" id="pdca">
+      <h2 class="pp-h2" id="h-pdca">Bahan PDCA tim</h2>
+      <p class="pp-sub">Dibuat otomatis dari angka di atas. Bahas di briefing pagi: pertahankan yang hijau, kejar yang merah.</p>
+      <div class="pp-pdca-steps">
+        <div class="pp-step"><span class="l">P</span><span class="n">Plan</span><p>Pecah sisa target menjadi target per hari dan per SA. Pakai angka "Sisa target per hari".</p></div>
+        <div class="pp-step"><span class="l">D</span><span class="n">Do</span><p>Fokus ke unit di Proses Billing dan Banding Ins. supaya cepat jadi CPUS dan revenue.</p></div>
+        <div class="pp-step"><span class="l">C</span><span class="n">Check</span><p>Buka dashboard tiap pagi. Cek peta mingguan: minggu merah adalah titik masalah.</p></div>
+        <div class="pp-step"><span class="l">A</span><span class="n">Act</span><p>Standarkan cara kerja di minggu hijau, perbaiki penyebab di minggu merah sebelum bulan depan.</p></div>
+      </div>
+      <div class="pp-cols" style="margin-top:14px">
+        <div class="pp-col keep" id="pertahankan"><h3>Pertahankan</h3><div class="pp-list" data-draw="pdca" data-mode="pertahankan" data-source="pdca"></div></div>
+        <div class="pp-col fix" id="tingkatkan"><h3>Tingkatkan</h3><div class="pp-list" data-draw="pdca" data-mode="tingkatkan" data-source="pdca"></div></div>
+      </div>
+    </section>
+
+    <p class="pp-foot">Sumber: sheet <b>Dashboard</b> di setiap file Google Drive <b>"NN UNIT ENTRY … TAHUN"</b>, dibaca langsung lewat service account setiap dashboard dibuka. Bulan terbaru dipilih otomatis; pilih bulan lain lewat menu Bulan. Tab Tahunan membaca semua file "NN UNIT ENTRY … 2026". Rata-rata per HK = aktual ÷ HK berjalan. Proyeksi = aktual + rata-rata per HK × sisa HK.</p>
+  </div>
+</div>
+
+<script>
+(function () {
+  const C = { ue: '#ffb020', rev: '#22d3ee', cpus: '#a3e635', psdn: '#f472b6', ok: '#34d399', warn: '#fbbf24', bad: '#f87171', target: '#3b4552', grid: '#232a33', muted: '#8d99a8', fg: '#eef2f6' };
+  const idInt = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 0 });
+  const idDec = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 1 });
+  const rpc = (v) => {
+    const a = Math.abs(v), s = v < 0 ? '-' : '';
+    if (a >= 1e9) return s + 'Rp ' + new Intl.NumberFormat('id-ID', { maximumFractionDigits: 2 }).format(a / 1e9) + ' M';
+    if (a >= 1e6) return s + 'Rp ' + new Intl.NumberFormat('id-ID', { maximumFractionDigits: 1 }).format(a / 1e6) + ' jt';
+    return s + 'Rp ' + idInt.format(a);
+  };
+  const axisC = (v) => {
+    const a = Math.abs(v);
+    if (a >= 1e9) return idDec.format(v / 1e9) + ' M';
+    if (a >= 1e6) return idInt.format(v / 1e6) + ' jt';
+    return idInt.format(v);
+  };
+  const fmt = {
+    int: (v) => idInt.format(v),
+    dec: (v) => idDec.format(v),
+    dec1: (v) => idDec.format(v),
+    year: (v) => String(v),
+    pct: (v) => Math.round(v * 100) + '%',
+    rp: (v) => 'Rp ' + idInt.format(v),
+    rpc: rpc,
+    sint: (v) => (v > 0 ? '+' : '') + idInt.format(v),
+    srp: (v) => (v > 0 ? '+Rp ' : v < 0 ? '-Rp ' : 'Rp ') + idInt.format(Math.abs(v)),
+    srpc: (v) => (v > 0 ? '+' : '') + rpc(v),
+    text: (v) => String(v),
+  };
+  const status = (p) => (p == null ? null : p >= 1 ? 'ok' : p >= 0.9 ? 'warn' : 'bad');
+  const where = (el) => {
+    const out = {};
+    (el.getAttribute('data-where') || '').split('&').forEach((kv) => { const i = kv.indexOf('='); if (i > 0 && kv.slice(0, i) !== 'bulan_no') out[decodeURIComponent(kv.slice(0, i))] = decodeURIComponent(kv.slice(i + 1)); });
+    return out;
+  };
+  const rowsOf = (id) => { const d = dash.data(id); return d.status === 'ok' && Array.isArray(d.data) ? d.data : null; };
+  const get = (rows, grp, key, period) => { const r = rows && rows.find((x) => x.grp === grp && x.key === key && x.period === period); return r ? r.value : null; };
+  const tipFor = (host) => {
+    let t = host.querySelector(':scope > .pp-tip');
+    if (!t) { t = document.createElement('div'); t.className = 'pp-tip'; t.hidden = true; host.appendChild(t); }
+    return {
+      show(ev, title, lines) {
+        t.replaceChildren();
+        const h = document.createElement('div'); h.className = 't'; h.textContent = title; t.appendChild(h);
+        lines.forEach((l) => { const d = document.createElement('div'); if (l.color) { const s = document.createElement('i'); s.className = 'pp-sw'; s.style.background = l.color; d.appendChild(s); } d.appendChild(document.createTextNode(l.text)); t.appendChild(d); });
+        t.hidden = false;
+        const b = host.getBoundingClientRect();
+        let x = ev.clientX - b.left + 12, y = ev.clientY - b.top - 10;
+        const w = t.offsetWidth, hh = t.offsetHeight;
+        if (x + w > b.width) x = Math.max(0, ev.clientX - b.left - w - 12);
+        if (y + hh > b.height) y = Math.max(0, b.height - hh);
+        t.style.left = x + 'px'; t.style.top = y + 'px';
+      },
+      hide() { t.hidden = true; },
+    };
+  };
+  const KPIS = ['ue', 'rev', 'cpus', 'psdn'];
+  const latest = () => {
+    const rows = rowsOf('ue_all');
+    if (!rows) return null;
+    const ms = rows.filter((x) => KPIS.includes(x.grp) && x.key === 'actual' && x.period === 'MTD' && x.value != null).map((x) => x.bulan_no);
+    return ms.length ? Math.max(...ms) : null;
+  };
+  const month = () => {
+    const rows = rowsOf('ue_all');
+    const p = Number(dash.params().bulan);
+    if (rows && p && rows.some((x) => x.bulan_no === p && x.key === 'actual')) return p;
+    return latest();
+  };
+  const mrows = () => { const rows = rowsOf('ue_all'); const m = month(); return rows && m != null ? rows.filter((x) => x.bulan_no === m) : null; };
+  const mcalc = (id) => { const rows = rowsOf(id); const m = month(); return rows && m != null ? rows.filter((x) => x.bulan_no === m) : null; };
+  const stamp = (el) => {
+    if (!el.hasAttribute('data-w0')) el.setAttribute('data-w0', el.getAttribute('data-where') || '');
+    const base = el.getAttribute('data-w0');
+    const m = month();
+    el.setAttribute('data-where', m == null ? base : 'bulan_no=' + m + (base ? '&' + base : ''));
+  };
+  window.ppKit = { C, fmt, rpc, axisC, status, where, rowsOf, get, tipFor, idInt, idDec, month, mrows, mcalc, stamp, latest };
+})();
+</script>
+
+<script>
+dash.loader('ue_all', {
+  description: 'Mencari file "NN UNIT ENTRY … TAHUN" di Google Drive, memilih tahun terbaru, lalu membaca sheet Dashboard (sheet pertama) setiap bulan menjadi baris: bulan, grup, kunci, periode, nilai, teks asli.',
+  fn: async ({ answer, call, args }) => {
+    const asObj = (a) => { if (typeof a === 'string') { try { return JSON.parse(a); } catch (e) { return a; } } return a; };
+    let found = asObj(answer);
+    if (!found || !Array.isArray(found.files)) throw new Error(typeof found === 'string' ? found.slice(0, 300) : 'Pencarian Google Drive tanpa daftar file. Kunci: ' + Object.keys(found || {}).join(', '));
+    const all = found.files.slice();
+    for (let page = 0; page < 6 && found && found.nextPageToken; page++) {
+      found = asObj(await call('search_files', { ...args, pageToken: found.nextPageToken }));
+      if (found && Array.isArray(found.files)) all.push(...found.files); else break;
+    }
+    const NAMA = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+    const byYear = {};
+    all.forEach((f) => {
+      const m = /^(\d{2})\s+UNIT ENTRY\b.*\b(20\d{2})\s*$/i.exec((f.title || '').trim());
+      if (!m || !/spreadsheet/.test(f.mimeType || '')) return;
+      const no = Number(m[1]), yr = Number(m[2]);
+      if (no < 1 || no > 12) return;
+      byYear[yr] = byYear[yr] || {};
+      if (!byYear[yr][no] || (f.modifiedTime || '') > (byYear[yr][no].modifiedTime || '')) byYear[yr][no] = f;
+    });
+    const years = Object.keys(byYear).map(Number);
+    if (!years.length) throw new Error('Tidak ada file "NN UNIT ENTRY … TAHUN" yang ditemukan di Google Drive.');
+    const tahun = Math.max(...years);
+    const files = byYear[tahun];
+
+    const parseSheet = (b64) => {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const csv = new TextDecoder('utf-8').decode(bytes);
+    const grid = [];
+    let row = [], cell = '', q = false;
+    for (let i = 0; i < csv.length; i++) {
+      const ch = csv[i];
+      if (q) {
+        if (ch === '"') { if (csv[i + 1] === '"') { cell += '"'; i++; } else q = false; }
+        else cell += ch;
+      } else if (ch === '"') q = true;
+      else if (ch === ',') { row.push(cell); cell = ''; }
+      else if (ch === '\n') { row.push(cell); grid.push(row); row = []; cell = ''; }
+      else if (ch !== '\r') cell += ch;
+    }
+    row.push(cell); grid.push(row);
+
+    const T = (s) => (s == null ? '' : String(s)).replace(/\s+/g, ' ').trim();
+    const num = (s) => {
+      s = T(s);
+      if (!s) return null;
+      let pct = false;
+      if (s.endsWith('%')) { pct = true; s = s.slice(0, -1); }
+      s = s.replace(/\./g, '').replace(',', '.');
+      if (!/^-?\d+(\.\d+)?$/.test(s)) return null;
+      const n = Number(s);
+      return pct ? n / 100 : n;
+    };
+    const at = (r, c) => (grid[r] && grid[r][c] != null ? T(grid[r][c]) : '');
+    const find = (pred) => {
+      for (let r = 0; r < grid.length; r++) for (let c = 0; c < grid[r].length; c++) if (pred(T(grid[r][c]))) return [r, c];
+      return null;
+    };
+    const nextVal = (r, c) => {
+      for (let k = c + 1; k < (grid[r] || []).length; k++) if (at(r, k)) return at(r, k);
+      return '';
+    };
+    const out = [];
+    const push = (grp, key, period, raw) => out.push({ grp, key, period, value: num(raw), text: T(raw) });
+
+    const months = /^(JAN|FEB|MAR|APR|MAY|MEI|JUN|JUL|AUG|AGU|AGT|SEP|OCT|OKT|NOV|DEC|DES)$/i;
+    const m = find((t) => months.test(t));
+    if (m) { push('info', 'bulan', '-', at(m[0], m[1])); push('info', 'tahun', '-', nextVal(m[0], m[1])); }
+    [['TODAY', 'hari_ini'], ['HARI KERJA', 'hk'], ['HK BERJALAN', 'hk_jalan'], ['SISA HK', 'sisa_hk']].forEach(([lab, key]) => {
+      const p = find((t) => t.toUpperCase() === lab);
+      if (p) push('info', key, '-', nextVal(p[0], p[1]));
+    });
+
+    const BLOCKS = { 'Unit Entry': 'ue', 'Rev.Total': 'rev', 'CPUS': 'cpus', 'PSDN': 'psdn' };
+    const ITEMS = { 'target': 'target', 'achievement': 'actual', 'ach. vs tgt.': 'pct', 'surplus/minus (+/-)': 'gap', 'asiist version': 'asiist' };
+    const isHeader = (r) => (grid[r] || []).some((x) => T(x) === 'W1');
+    for (let r = 0; r < grid.length; r++) {
+      if (!isHeader(r)) continue;
+      const starts = [];
+      grid[r].forEach((x, c) => { if (BLOCKS[T(x)] && nextVal(r, c) === 'W1') starts.push(c); });
+      starts.forEach((c, i) => {
+        const grp = BLOCKS[at(r, c)];
+        const end = i + 1 < starts.length ? starts[i + 1] - 2 : Infinity;
+        const periods = [];
+        for (let k = c + 1; k < Math.min(end, grid[r].length); k++) if (at(r, k)) periods.push({ p: at(r, k) === 'Full Month' ? 'MTD' : at(r, k), col: k });
+        const seen = {};
+        for (let rr = r + 1; rr < Math.min(grid.length, r + 16); rr++) {
+          if (isHeader(rr)) break;
+          for (let lc = c - 2; lc <= c + 2; lc++) {
+            const item = ITEMS[at(rr, lc).toLowerCase()];
+            if (!item || seen[item]) continue;
+            seen[item] = true;
+            const taken = {};
+            for (let k = lc + 1; k < Math.min(end, grid[rr].length); k++) {
+              if (!at(rr, k)) continue;
+              let best = null;
+              periods.forEach((pp) => { if (best == null || Math.abs(pp.col - k) < Math.abs(best.col - k)) best = pp; });
+              if (best && Math.abs(best.col - k) <= 3 && !taken[best.p]) { taken[best.p] = true; push(grp, item, best.p, at(rr, k)); }
+            }
+            break;
+          }
+        }
+      });
+    }
+
+    const rem = find((t) => /^REMAINING/i.test(t));
+    if (rem) {
+      const LAB = { 'UE': 'ue', 'CPUS': 'cpus', 'Rev.Total': 'rev', 'PSDN': 'psdn' };
+      for (let rr = rem[0] + 1; rr < Math.min(grid.length, rem[0] + 25); rr++)
+        for (let c = rem[1] - 4; c <= rem[1] + 4; c++) if (LAB[at(rr, c)]) push('sisa', LAB[at(rr, c)], '-', nextVal(rr, c));
+    }
+
+    [['HEAVY', 'heavy'], ['MEDIUM', 'medium'], ['LIGHT', 'light'], ['Total Panel', 'panel']].forEach(([lab, key]) => {
+      const p = find((t) => t === lab);
+      if (p) push('rusak', key, '-', nextVal(p[0], p[1]));
+    });
+
+    const vertical = (r, c, dir, ok) => {
+      for (let k = 1; k <= 5; k++) { const v = num(at(r + dir * k, c)); if (v != null && ok(v)) return at(r + dir * k, c); if (at(r + dir * k, c)) return null; }
+      return null;
+    };
+    [['Total Unit', 'total'], ['Proses Billing', 'billing'], ['Production', 'production'], ['Banding Ins.', 'banding'], ['Job Stoppage', 'stoppage'], ['Production GR', 'gr'], ['Rawat Jalan', 'rawat']].forEach(([lab, key]) => {
+      const p = find((t) => t === lab);
+      if (!p) return;
+      const u = vertical(p[0], p[1], -1, (v) => Math.abs(v) < 100000);
+      const v = vertical(p[0], p[1], 1, (v) => Math.abs(v) >= 100000);
+      if (u != null) push('status', key, 'unit', u);
+      if (v != null) push('status', key, 'nilai', v);
+    });
+
+    const j = find((t) => t === 'Jasa');
+    if (j) {
+      const r = j[0];
+      (grid[r] || []).forEach((x, c) => {
+        const key = { 'Jasa': 'jasa', 'Part': 'part', 'Total': 'total' }[T(x)];
+        if (!key) return;
+        const v = vertical(r, c, -1, (n) => Math.abs(n) >= 100000);
+        if (v != null) push('wip', key, '-', v);
+      });
+    }
+
+    // Layout B (format lama, mis. Februari): baris per KPI di bawah "KPI Avg", kolom Target / W1…W5 / Sum. / Act / Tgt
+    if (!out.some((d) => d.key === 'actual')) {
+      for (let r = 0; r < grid.length; r++) {
+        (grid[r] || []).forEach((x, c) => {
+          if (T(x) !== 'KPI Avg') return;
+          let end = (grid[r] || []).length;
+          for (let k2 = c + 1; k2 < end; k2++) if (at(r, k2) === 'KPI Avg') { end = k2; break; }
+          const col = (lab) => { for (let k2 = c + 1; k2 < end; k2++) if (at(r, k2).toLowerCase() === lab) return k2; return -1; };
+          const ct = col('target'), cs = col('sum.'), cp = col('act / tgt');
+          if (ct < 0 || cs < 0) return;
+          const wk = [];
+          for (let rr = r + 1; rr <= r + 3; rr++) for (let k2 = c + 1; k2 < end; k2++) if (/^W[1-5]$/.test(at(rr, k2))) wk.push([at(rr, k2), k2]);
+          for (let rr = r + 1; rr < Math.min(grid.length, r + 12); rr++) {
+            const k = BLOCKS[at(rr, c)];
+            if (!k) continue;
+            push(k, 'target', 'MTD', at(rr, ct));
+            push(k, 'actual', 'MTD', at(rr, cs));
+            if (cp >= 0) push(k, 'pct', 'MTD', at(rr, cp));
+            wk.forEach(([w, k2]) => { if (at(rr, k2)) push(k, 'actual', w, at(rr, k2)); });
+          }
+        });
+      }
+    }
+
+    return out;
+    };
+
+    const rows = [];
+    for (const no of Object.keys(files).map(Number).sort((a, b) => a - b)) {
+      const f = files[no];
+      let got = null, note = '', parsed = [];
+      try {
+        got = asObj(await call('download_file_content', { fileId: f.id }));
+        if (!got || typeof got !== 'object' || !got.content) note = 'File tidak bisa dibaca';
+        else { parsed = parseSheet(got.content); if (!parsed.some((d) => d.key === 'actual')) note = 'Sheet Dashboard kosong atau formatnya lain'; }
+      } catch (e) { note = 'Gagal membaca: ' + (e && e.message ? e.message : String(e)).slice(0, 120); }
+      parsed.forEach((d) => rows.push({ bulan_no: no, bulan: NAMA[no - 1], tahun, ...d }));
+      rows.push({ bulan_no: no, bulan: NAMA[no - 1], tahun, grp: 'file', key: 'nama', period: '-', value: null, text: (f.title || '').trim() + (note ? ' · ' + note : '') });
+    }
+    return { columns: ['bulan_no', 'bulan', 'tahun', 'grp', 'key', 'period', 'value', 'text'], rows };
+  },
+});
+
+dash.calc('kpi', {
+  title: 'Laju harian & proyeksi',
+  description: 'Per bulan dan KPI: rata-rata per hari kerja berjalan, target per hari kerja, dan proyeksi akhir bulan dari sheet Dashboard.',
+  inputs: ['ue_all'],
+  fn: (ue_all) => {
+    const out = [];
+    [...new Set(ue_all.map((r) => r.bulan_no))].forEach((b) => {
+      const g = (grp, key, period) => { const r = ue_all.find((x) => x.bulan_no === b && x.grp === grp && x.key === key && x.period === period); return r ? r.value : null; };
+      const hk = g('info', 'hk', '-'), jalan = g('info', 'hk_jalan', '-'), sisa = g('info', 'sisa_hk', '-');
+      ['ue', 'rev', 'cpus', 'psdn'].forEach((k) => {
+        const t = g(k, 'target', 'MTD'), a = g(k, 'actual', 'MTD');
+        const rate = a != null && jalan ? a / jalan : null;
+        const proj = rate != null && sisa != null ? a + rate * sisa : null;
+        out.push({ bulan_no: b, kpi: k, target: t, actual: a, rata_harian: rate, target_harian: t != null && hk ? t / hk : null, proyeksi: proj, proyeksi_pct: proj != null && t ? proj / t : null, kejar_per_hari: t != null && a != null && sisa ? Math.max(0, t - a) / sisa : null });
+      });
+    });
+    return out;
+  },
+});
+
+dash.calc('ringkas', {
+  title: 'KPI yang sudah tercapai',
+  description: 'Per bulan: jumlah KPI utama yang pencapaiannya 100% atau lebih.',
+  inputs: ['ue_all'],
+  fn: (ue_all) => [...new Set(ue_all.map((r) => r.bulan_no))].map((b) => {
+    const ks = ['ue', 'rev', 'cpus', 'psdn'];
+    const pct = (k) => { const r = ue_all.find((x) => x.bulan_no === b && x.grp === k && x.key === 'pct' && x.period === 'MTD'); return r ? r.value : null; };
+    return { bulan_no: b, di_atas: ks.filter((k) => pct(k) != null && pct(k) >= 1).length, total: ks.length };
+  }),
+});
+
+dash.calc('tahun', {
+  title: 'Kinerja bulanan',
+  description: 'Target, aktual dan % per bulan untuk tiap KPI, dari baris "Full Month" sheet Dashboard setiap bulan.',
+  inputs: ['ue_all'],
+  fn: (ue_all) => {
+    const out = [];
+    [...new Set(ue_all.map((r) => r.bulan_no))].sort((a, b) => a - b).forEach((b) => {
+      const g = (k, key) => { const r = ue_all.find((x) => x.bulan_no === b && x.grp === k && x.key === key && x.period === 'MTD'); return r ? r.value : null; };
+      const nm = (ue_all.find((x) => x.bulan_no === b) || {}).bulan;
+      ['ue', 'rev', 'cpus', 'psdn'].forEach((k) => out.push({ bulan_no: b, bulan: nm, kpi: k, target: g(k, 'target'), actual: g(k, 'actual'), pct: g(k, 'pct') }));
+    });
+    return out;
+  },
+});
+
+dash.calc('pdca', {
+  title: 'Daftar PDCA',
+  description: 'Per bulan: mengelompokkan tiap KPI dan status unit ke Pertahankan atau Tingkatkan, dengan alasan dari angka mingguan dan bulanan.',
+  inputs: ['ue_all', 'kpi'],
+  fn: (ue_all, kpi_all) => {
+    const result = [];
+    [...new Set(ue_all.map((r) => r.bulan_no))].forEach((bulan_no) => {
+    const sheet = ue_all.filter((x) => x.bulan_no === bulan_no);
+    const kpi = kpi_all.filter((x) => x.bulan_no === bulan_no);
+    const NAMA = { ue: 'Unit Entry', rev: 'Revenue total', cpus: 'CPUS', psdn: 'PSDN' };
+    const RP = { rev: true, psdn: true };
+    const g = (grp, key, period) => { const r = sheet.find((x) => x.grp === grp && x.key === key && x.period === period); return r ? r.value : null; };
+    const nf = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 1 });
+    const rp = (v) => { const a = Math.abs(v); return a >= 1e9 ? 'Rp ' + nf.format(a / 1e9) + ' M' : a >= 1e6 ? 'Rp ' + nf.format(a / 1e6) + ' jt' : 'Rp ' + nf.format(a); };
+    const val = (k, v) => (RP[k] ? rp(v) : nf.format(Math.abs(v)) + ' unit');
+    const pc = (v) => Math.round(v * 100) + '%';
+    const sisa = g('info', 'sisa_hk', '-');
+    const weeks = ['W1', 'W2', 'W3', 'W4', 'W5'];
+    const out = [];
+    ['ue', 'rev', 'cpus', 'psdn'].forEach((k) => {
+      const p = g(k, 'pct', 'MTD');
+      if (p == null) return;
+      const kr = kpi.find((x) => x.kpi === k) || {};
+      const wk = weeks.map((w) => ({ w, p: g(k, 'pct', w) })).filter((x) => x.p != null);
+      const last = wk.length ? wk[wk.length - 1].w : null;
+      const closed = wk.filter((x) => !(sisa > 0 && x.w === last));
+      const weak = closed.filter((x) => x.p < 1).map((x) => x.w + ' ' + pc(x.p));
+      const best = closed.reduce((b, x) => (b == null || x.p > b.p ? x : b), null);
+      const down = closed.length >= 3 && closed.slice(-3).every((x, i, arr) => i === 0 || x.p < arr[i - 1].p);
+      const tg = g(k, 'target', 'MTD'), ac = g(k, 'actual', 'MTD');
+      const gap = g(k, 'gap', 'MTD') ?? (tg != null && ac != null ? ac - tg : 0);
+      let note;
+      if (p >= 1) {
+        note = NAMA[k] + ' sudah ' + pc(p) + ' dari target (surplus ' + val(k, gap) + ').';
+        if (best) note += ' Minggu terbaik ' + best.w + ' (' + pc(best.p) + '): pelajari apa yang berjalan baik di minggu itu.';
+        if (weak.length) note += ' Waspada, di bawah target pada ' + weak.join(', ') + '.';
+      } else {
+        note = NAMA[k] + ' baru ' + pc(p) + ', kurang ' + val(k, gap) + '.';
+        if (kr.kejar_per_hari != null && sisa) note += ' Perlu tambahan ' + val(k, kr.kejar_per_hari) + ' per hari selama ' + nf.format(sisa) + ' HK sisa.';
+        if (weak.length) note += ' Minggu lemah: ' + weak.join(', ') + '.';
+      }
+      if (down) note += ' Tren 3 minggu terakhir menurun.';
+      if (kr.proyeksi_pct != null) note += ' Proyeksi akhir bulan ' + pc(kr.proyeksi_pct) + '.';
+      out.push({ item: k, nama: NAMA[k], status: p >= 1 ? 'pertahankan' : 'tingkatkan', angka: pc(p), urut: p, catatan: note });
+    });
+    const st = (key) => ({ u: g('status', key, 'unit'), v: g('status', key, 'nilai') });
+    const b = st('banding'), s = st('stoppage'), bl = st('billing');
+    if (bl.u) out.push({ item: 'billing', nama: 'Proses billing', status: 'tingkatkan', angka: nf.format(bl.u) + ' unit', urut: 0.5, catatan: bl.u + ' unit menunggu billing' + (bl.v ? ' senilai ' + rp(bl.v) : '') + '. Percepat penagihan agar masuk CPUS dan revenue bulan ini.' });
+    if (b.u) out.push({ item: 'banding', nama: 'Banding asuransi', status: 'tingkatkan', angka: nf.format(b.u) + ' unit', urut: 0.4, catatan: b.u + ' unit masih banding asuransi' + (b.v ? ' senilai ' + rp(b.v) : '') + '. Tindak lanjuti ke asuransi setiap hari.' });
+    if (s.u) out.push({ item: 'stoppage', nama: 'Job stoppage', status: 'tingkatkan', angka: nf.format(s.u) + ' unit', urut: 0.3, catatan: s.u + ' unit berhenti dikerjakan' + (s.v ? ' senilai ' + rp(s.v) : '') + '. Cari penyebab (part, approval) dan tetapkan PIC.' });
+    const light = g('rusak', 'light', '-'), heavy = g('rusak', 'heavy', '-');
+    if (light != null && light >= 0.5) out.push({ item: 'rusak', nama: 'Komposisi kerusakan', status: 'pertahankan', angka: pc(light) + ' light', urut: 0.1, catatan: 'Mayoritas unit rusak ringan (' + pc(light) + '), heavy ' + (heavy != null ? pc(heavy) : '—') + '. Jaga lead time cepat untuk unit ringan agar arus unit tetap lancar.' });
+    out.sort((x, y) => (x.status === y.status ? y.urut - x.urut : x.status < y.status ? -1 : 1)).forEach((r) => result.push({ bulan_no, ...r }));
+    });
+    return result;
+  },
+});
+
+dash.calc('ytd', {
+  title: 'YTD (Januari s/d bulan)',
+  description: 'Untuk setiap bulan: jumlah target dan aktual dari Januari sampai bulan itu (bulan tanpa data dilewati), % gabungan, selisih, dan berapa bulan mencapai target.',
+  inputs: ['tahun'],
+  fn: (tahun) => {
+    const out = [];
+    [...new Set(tahun.map((r) => r.bulan_no))].sort((a, b) => a - b).forEach((b) => {
+      ['ue', 'rev', 'cpus', 'psdn'].forEach((k) => {
+        const ms = tahun.filter((r) => r.kpi === k && r.bulan_no <= b && r.target != null && r.actual != null);
+        const target = ms.reduce((s, r) => s + r.target, 0), actual = ms.reduce((s, r) => s + r.actual, 0);
+        out.push({ bulan_no: b, kpi: k, target: ms.length ? target : null, actual: ms.length ? actual : null, pct: target ? actual / target : null, gap: ms.length ? actual - target : null, bulan_ok: ms.filter((r) => r.actual >= r.target).length, bulan_data: ms.length, dari: ms.length ? ms[0].bulan : null });
+      });
+    });
+    return out;
+  },
+});
+
+dash.calc('pdca_tahun', {
+  title: 'PDCA tahunan',
+  description: 'Per KPI: bulan terbaik, bulan terlemah, bulan di bawah target, dan arah 3 bulan terakhir.',
+  inputs: ['tahun', 'ytd'],
+  fn: (tahun, ytd) => {
+    const NAMA = { ue: 'Unit Entry', rev: 'Revenue total', cpus: 'CPUS', psdn: 'PSDN' };
+    const pc = (v) => Math.round(v * 100) + '%';
+    const out = [];
+    ['ue', 'rev', 'cpus', 'psdn'].forEach((k) => {
+      const last = Math.max(...ytd.map((r) => r.bulan_no));
+      const y = ytd.find((r) => r.kpi === k && r.bulan_no === last);
+      if (!y || y.pct == null) return;
+      const ms = tahun.filter((r) => r.kpi === k && r.target && r.actual != null).map((r) => ({ b: r.bulan, no: r.bulan_no, p: r.actual / r.target })).sort((a, b) => a.no - b.no);
+      const best = ms.reduce((m, x) => (!m || x.p > m.p ? x : m), null);
+      const worst = ms.reduce((m, x) => (!m || x.p < m.p ? x : m), null);
+      const low = ms.filter((x) => x.p < 1).map((x) => x.b + ' ' + pc(x.p));
+      const last3 = ms.slice(-3);
+      const down = last3.length === 3 && last3[2].p < last3[1].p && last3[1].p < last3[0].p;
+      const up = last3.length === 3 && last3[2].p > last3[1].p && last3[1].p > last3[0].p;
+      let note = NAMA[k] + ' tahun berjalan ' + pc(y.pct) + ' dari target, ' + y.bulan_ok + ' dari ' + y.bulan_data + ' bulan tercapai.';
+      if (best) note += ' Terbaik ' + best.b + ' (' + pc(best.p) + ')';
+      if (worst && worst !== best) note += ', terlemah ' + worst.b + ' (' + pc(worst.p) + ').'; else note += '.';
+      if (low.length) note += ' Di bawah target: ' + low.join(', ') + '.';
+      if (down) note += ' 3 bulan terakhir menurun.';
+      if (up) note += ' 3 bulan terakhir naik.';
+      const keep = y.pct >= 1 && low.length <= 1;
+      out.push({ item: k, nama: NAMA[k], status: keep ? 'pertahankan' : 'tingkatkan', angka: pc(y.pct), urut: y.pct, catatan: note });
+    });
+    return out.sort((a, b) => b.urut - a.urut);
+  },
+});
+
+
+dash.calc('analisa_ytd', {
+  title: 'Analisa YTD',
+  description: 'Per bulan terpilih dan KPI: status YTD, bulan penyumbang surplus dan kekurangan terbesar, arah 3 bulan terakhir, dan kebutuhan per bulan sampai Desember (dari rata-rata target bulanan).',
+  inputs: ['tahun', 'ytd'],
+  fn: (tahun, ytd) => {
+    const NAMA = { ue: 'Unit Entry', rev: 'Revenue total', cpus: 'CPUS', psdn: 'PSDN' };
+    const BLN = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+    const RP = { rev: true, psdn: true };
+    const nf = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 1 });
+    const ni = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 0 });
+    const rp = (v) => { const a = Math.abs(v); return a >= 1e9 ? 'Rp ' + nf.format(a / 1e9) + ' M' : a >= 1e6 ? 'Rp ' + nf.format(a / 1e6) + ' jt' : 'Rp ' + ni.format(a); };
+    const val = (k, v) => (RP[k] ? rp(v) : ni.format(Math.abs(v)) + ' unit');
+    const sg = (k, v) => (v >= 0 ? '+' : '−') + val(k, v);
+    const pc = (v) => Math.round(v * 100) + '%';
+    const out = [];
+    [...new Set(ytd.map((r) => r.bulan_no))].forEach((b) => {
+      const rowsB = [];
+      ['ue', 'rev', 'cpus', 'psdn'].forEach((k) => {
+        const y = ytd.find((r) => r.bulan_no === b && r.kpi === k);
+        if (!y || y.pct == null) return;
+        const ms = tahun.filter((r) => r.kpi === k && r.bulan_no <= b && r.target != null && r.actual != null).sort((a, c) => a.bulan_no - c.bulan_no).map((r) => ({ no: r.bulan_no, gap: r.actual - r.target, p: r.target ? r.actual / r.target : null, t: r.target }));
+        const plus = ms.filter((m) => m.gap > 0).sort((a, c) => c.gap - a.gap)[0];
+        const minus = ms.filter((m) => m.gap < 0).sort((a, c) => a.gap - c.gap)[0];
+        const status = y.pct >= 1.05 ? 'aman' : y.pct >= 1 ? 'tipis' : y.pct >= 0.95 ? 'waspada' : 'kritis';
+        const p1 = 'YTD Januari–' + BLN[b - 1] + ': ' + (RP[k] ? rp(y.actual) : ni.format(y.actual) + ' unit') + ' dari target ' + (RP[k] ? rp(y.target) : ni.format(y.target) + ' unit') + ' (' + pc(y.pct) + '), ' + (y.gap >= 0 ? 'surplus ' : 'kekurangan ') + val(k, y.gap) + '.';
+        let p2 = '';
+        if (plus) p2 += 'Penyumbang surplus terbesar ' + BLN[plus.no - 1] + ' (' + sg(k, plus.gap) + ').';
+        if (minus) p2 += (p2 ? ' ' : '') + 'Kekurangan terbesar ' + BLN[minus.no - 1] + ' (' + sg(k, minus.gap) + ')' + (y.gap > 0 ? ', tertutup oleh surplus bulan lain.' : '.');
+        if (!minus) p2 += (p2 ? ' ' : '') + 'Belum pernah di bawah target.';
+        const prev = ytd.filter((r) => r.kpi === k && r.bulan_no < b && r.pct != null).sort((a, c) => c.bulan_no - a.bulan_no)[2] || ytd.filter((r) => r.kpi === k && r.bulan_no < b && r.pct != null).sort((a, c) => a.bulan_no - c.bulan_no)[0];
+        const last3 = ms.slice(-3);
+        const avg3 = last3.length ? last3.reduce((s, m) => s + (m.p || 0), 0) / last3.length : null;
+        let p3 = '';
+        if (prev) p3 = 'YTD ' + (y.pct > prev.pct + 0.005 ? 'naik' : y.pct < prev.pct - 0.005 ? 'turun' : 'stabil') + ' dari ' + pc(prev.pct) + ' (' + BLN[prev.bulan_no - 1] + ') ke ' + pc(y.pct) + '.';
+        if (avg3 != null) p3 += (p3 ? ' ' : '') + 'Rata-rata ' + last3.length + ' bulan terakhir ' + pc(avg3) + ' per bulan' + (avg3 < 1 ? ', di bawah target: momentum melemah.' : '.');
+        const sisa = 12 - b;
+        const avgT = ms.length ? ms.reduce((s, m) => s + m.t, 0) / ms.length : null;
+        let p4 = '';
+        if (sisa > 0 && avgT) {
+          const need = Math.max(0, (avgT * sisa - y.gap) / sisa);
+          const r = need / avgT;
+          if (need === 0) p4 = 'Surplus YTD sudah lebih besar dari target ' + sisa + ' bulan sisa. Tetap kejar target bulanan agar margin tidak habis.';
+          else p4 = 'Agar akhir tahun tetap ≥100%, ' + sisa + ' bulan sisa cukup rata-rata ' + val(k, need) + ' per bulan (' + pc(r) + ' dari target bulanan rata-rata ' + val(k, avgT) + ').' + (r < 1 ? ' Ada ruang ' + pc(1 - r) + ', tapi jangan turun lebih dari itu.' : ' Harus di atas target setiap bulan.');
+        } else if (sisa === 0) p4 = y.gap >= 0 ? 'Tahun selesai di atas target.' : 'Tahun selesai di bawah target.';
+        const row = { bulan_no: b, kpi: k, nama: NAMA[k], status, pct: y.pct, p1, p2, p3, p4 };
+        out.push(row); rowsB.push(row);
+      });
+      if (rowsB.length) {
+        const ok = rowsB.filter((r) => r.pct >= 1), bad = rowsB.filter((r) => r.pct < 1);
+        const best = rowsB.slice().sort((a, c) => c.pct - a.pct)[0], low = rowsB.slice().sort((a, c) => a.pct - c.pct)[0];
+        let s = 'Sampai ' + BLN[b - 1] + ', ' + ok.length + ' dari ' + rowsB.length + ' KPI di atas target YTD. Terkuat ' + best.nama + ' (' + pc(best.pct) + '), paling tipis ' + low.nama + ' (' + pc(low.pct) + ').';
+        if (bad.length) s += ' Fokus perbaikan: ' + bad.map((r) => r.nama).join(', ') + '.';
+        else if (low.pct < 1.05) s += ' ' + low.nama + ' perlu dijaga karena surplusnya kecil.';
+        out.push({ bulan_no: b, kpi: 'semua', nama: 'Ringkasan', status: bad.length ? 'waspada' : 'aman', pct: null, p1: s, p2: '', p3: '', p4: '' });
+      }
+    });
+    return out;
+  },
+});
+
+
+dash.calc('analisa_bulan', {
+  title: 'Analisa bulan berjalan',
+  description: 'Per bulan dan KPI: status, selisih terhadap target, minggu terkuat dan terlemah, laju per hari kerja, kebutuhan per hari untuk sisa HK, dan perbandingan dengan bulan sebelumnya.',
+  inputs: ['ue_all', 'kpi'],
+  fn: (ue_all, kpi_all) => {
+    const NAMA = { ue: 'Unit Entry', rev: 'Revenue total', cpus: 'CPUS', psdn: 'PSDN' };
+    const BLN = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+    const RP = { rev: true, psdn: true };
+    const nf = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 1 });
+    const ni = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 0 });
+    const n2 = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 2 });
+    const rp = (v) => { const a = Math.abs(v); return a >= 1e9 ? 'Rp ' + n2.format(a / 1e9) + ' M' : a >= 1e6 ? 'Rp ' + nf.format(a / 1e6) + ' jt' : 'Rp ' + ni.format(a); };
+    const val = (k, v) => (RP[k] ? rp(v) : nf.format(Math.abs(v)) + ' unit');
+    const pc = (v) => Math.round(v * 100) + '%';
+    const out = [];
+    const months = [...new Set(ue_all.map((r) => r.bulan_no))];
+    months.forEach((b) => {
+      const g = (grp, key, period, bb) => { const r = ue_all.find((x) => x.bulan_no === (bb || b) && x.grp === grp && x.key === key && x.period === period); return r ? r.value : null; };
+      const sisa = g('info', 'sisa_hk', '-') || 0, jalan = g('info', 'hk_jalan', '-');
+      const rowsB = [];
+      ['ue', 'rev', 'cpus', 'psdn'].forEach((k) => {
+        const t = g(k, 'target', 'MTD'), a = g(k, 'actual', 'MTD');
+        if (t == null || a == null) return;
+        const p = g(k, 'pct', 'MTD') ?? (t ? a / t : null);
+        const gap = g(k, 'gap', 'MTD') ?? a - t;
+        const kr = kpi_all.find((x) => x.bulan_no === b && x.kpi === k) || {};
+        const wk = ['W1', 'W2', 'W3', 'W4', 'W5'].map((w) => ({ w, p: g(k, 'pct', w), a: g(k, 'actual', w), t: g(k, 'target', w) })).filter((x) => x.a != null || x.p != null);
+        const last = wk.length ? wk[wk.length - 1].w : null;
+        const closed = wk.filter((x) => x.p != null && !(sisa > 0 && x.w === last));
+        const best = closed.slice().sort((x, y) => y.p - x.p)[0], worst = closed.slice().sort((x, y) => x.p - y.p)[0];
+        const low = closed.filter((x) => x.p < 1).map((x) => x.w);
+        const down = closed.length >= 3 && closed.slice(-3).every((x, i, arr) => i === 0 || x.p < arr[i - 1].p);
+        const up = closed.length >= 3 && closed.slice(-3).every((x, i, arr) => i === 0 || x.p > arr[i - 1].p);
+        const prevNo = months.filter((m) => m < b && g(k, 'actual', 'MTD', m) != null).sort((x, y) => y - x)[0];
+        const prevP = prevNo ? (g(k, 'pct', 'MTD', prevNo) ?? (g(k, 'actual', 'MTD', prevNo) / g(k, 'target', 'MTD', prevNo))) : null;
+        let status, label;
+        if (p >= 1) { status = 'ok'; label = 'Tercapai'; }
+        else if (sisa > 0 && kr.proyeksi_pct != null && kr.proyeksi_pct >= 1) { status = 'warn'; label = 'Bisa dikejar'; }
+        else if (p >= 0.9) { status = 'warn'; label = 'Hampir'; }
+        else { status = 'bad'; label = 'Tertinggal'; }
+        const p1 = BLN[b - 1] + ': ' + (RP[k] ? rp(a) : ni.format(a) + ' unit') + ' dari target ' + (RP[k] ? rp(t) : ni.format(t) + ' unit') + ' (' + pc(p) + '), ' + (gap >= 0 ? 'surplus ' : 'kurang ') + val(k, gap) + '.' + (prevP != null ? ' Bulan lalu (' + BLN[prevNo - 1] + ') ' + pc(prevP) + ', ' + (p > prevP + 0.005 ? 'naik.' : p < prevP - 0.005 ? 'turun.' : 'stabil.') : '');
+        let p2 = '';
+        if (best && worst && best !== worst) p2 = 'Minggu terkuat ' + best.w + ' (' + pc(best.p) + '), terlemah ' + worst.w + ' (' + pc(worst.p) + ').';
+        else if (best) p2 = 'Minggu ' + best.w + ' ' + pc(best.p) + '.';
+        else if (wk.length) { const top = wk.slice().sort((x, y) => (y.a || 0) - (x.a || 0))[0]; p2 = 'Tidak ada target mingguan di sheet; aktual tertinggi di ' + top.w + ' (' + val(k, top.a) + ').'; }
+        if (low.length) p2 += ' Di bawah target: ' + low.join(', ') + '.';
+        if (down) p2 += ' Tren 3 minggu terakhir menurun.';
+        if (up) p2 += ' Tren 3 minggu terakhir naik.';
+        if (sisa > 0 && last) p2 += ' ' + last + ' masih berjalan.';
+        let p3 = '';
+        if (kr.rata_harian != null && kr.target_harian) p3 = 'Laju ' + val(k, kr.rata_harian) + ' per HK vs target ' + val(k, kr.target_harian) + ' per HK (' + pc(kr.rata_harian / kr.target_harian) + ').';
+        const lastClosed = closed.length ? closed[closed.length - 1] : null;
+        if (p3 && lastClosed && lastClosed.p < 0.9 && kr.target_harian && kr.rata_harian / kr.target_harian >= 1) p3 += ' Hati-hati: rata-rata ini terangkat minggu awal; minggu terakhir yang selesai (' + lastClosed.w + ') hanya ' + pc(lastClosed.p) + ', jadi proyeksi bisa terlalu optimis.';
+        let p4 = '';
+        if (sisa > 0) {
+          if (gap < 0) {
+            const need = -gap / sisa;
+            p4 = 'Untuk menutup kekurangan cukup ' + val(k, need) + ' per hari selama ' + nf.format(sisa) + ' HK sisa.';
+            if (kr.rata_harian != null) p4 += need <= kr.rata_harian ? ' Laju sekarang ' + val(k, kr.rata_harian) + ' per HK, jadi target bisa tercapai asal ritme dijaga.' : ' Ini di atas laju sekarang (' + val(k, kr.rata_harian) + ' per HK): perlu dorongan ekstra.';
+            if (kr.proyeksi_pct != null) p4 += ' Proyeksi akhir bulan ' + pc(kr.proyeksi_pct) + '.';
+          } else p4 = 'Target sudah aman. Dengan laju sekarang proyeksi akhir bulan ' + (kr.proyeksi_pct != null ? pc(kr.proyeksi_pct) : '—') + '; jaga ritme di sisa ' + nf.format(sisa) + ' HK.';
+        } else p4 = 'Bulan ditutup di ' + pc(p) + (gap >= 0 ? ', target tercapai.' : ', target tidak tercapai.');
+        const row = { bulan_no: b, kpi: k, nama: NAMA[k], status, label, pct: p, p1, p2, p3, p4 };
+        out.push(row); rowsB.push(row);
+      });
+      if (!rowsB.length) return;
+      const ok = rowsB.filter((r) => r.pct >= 1), fix = rowsB.filter((r) => r.pct < 1).sort((x, y) => x.pct - y.pct);
+      let s = BLN[b - 1] + (sisa > 0 ? ' (sisa ' + nf.format(sisa) + ' HK)' : '') + ': ' + ok.length + ' dari ' + rowsB.length + ' KPI sudah mencapai target.';
+      if (ok.length) s += ' Tercapai: ' + ok.map((r) => r.nama + ' ' + pc(r.pct)).join(', ') + '.';
+      if (fix.length) s += ' Prioritas: ' + fix.map((r) => r.nama + ' ' + pc(r.pct)).join(', ') + '.';
+      const ops = [];
+      const su = (key) => g('status', key, 'unit'), sv = (key) => g('status', key, 'nilai');
+      if (su('billing')) ops.push(su('billing') + ' unit proses billing' + (sv('billing') ? ' (' + rp(sv('billing')) + ')' : ''));
+      if (su('banding')) ops.push(su('banding') + ' unit banding asuransi' + (sv('banding') ? ' (' + rp(sv('banding')) + ')' : ''));
+      if (su('stoppage')) ops.push(su('stoppage') + ' unit job stoppage' + (sv('stoppage') ? ' (' + rp(sv('stoppage')) + ')' : ''));
+      if (ops.length && sisa > 0) s += ' Peluang tercepat menambah CPUS dan revenue: ' + ops.join(', ') + '.';
+      out.push({ bulan_no: b, kpi: 'semua', nama: 'Ringkasan', status: fix.length ? 'warn' : 'ok', label: '', pct: null, p1: s, p2: '', p3: '', p4: '' });
+    });
+    return out;
+  },
+});
+
+</script>
+
+<script>
+(function () {
+  const K = window.ppKit;
+
+  // Tabs
+  const tabs = document.querySelectorAll('.pp-tab');
+  const show = (name) => {
+    tabs.forEach((t) => t.setAttribute('aria-selected', String(t.getAttribute('data-tab') === name)));
+    document.querySelectorAll('.pp-panel').forEach((p) => { p.hidden = p.getAttribute('data-panel') !== name; });
+    dash.setLink(name);
+  };
+  tabs.forEach((t) => t.addEventListener('click', () => show(t.getAttribute('data-tab'))));
+  const h = location.hash.slice(1);
+  if (['mingguan', 'harian', 'tahunan'].includes(h)) show(h);
+
+  // Month picker
+  dash.draw('bulanpick', (sel) => {
+    const rows = K.rowsOf('ue_all');
+    const full = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+    const ms = rows ? [...new Set(rows.filter((x) => ['ue', 'rev', 'cpus', 'psdn'].includes(x.grp) && x.key === 'actual' && x.period === 'MTD' && x.value != null).map((x) => x.bulan_no))].sort((a, b) => b - a) : [];
+    const yr = rows && rows.length ? rows[0].tahun : '';
+    const last = K.latest();
+    sel.replaceChildren(...ms.map((m) => new Option(full[m - 1] + ' ' + yr + (m === last ? ' (terbaru)' : ''), String(m))));
+    const cur = K.month();
+    if (cur != null) sel.value = String(cur);
+    sel.onchange = () => { const v = Number(sel.value); dash.setParams({ bulan: v === K.latest() ? null : v }); };
+  });
+
+  // Card status colors
+  dash.onData(() => {
+    const rows = K.mrows();
+    document.querySelectorAll('.pp-card[data-k]').forEach((card) => {
+      const k = card.getAttribute('data-k');
+      const st = K.status(K.get(rows, k, 'pct', 'MTD'));
+      card.classList.toggle('is-ok', st === 'ok');
+      card.classList.toggle('is-warn', st === 'warn');
+      card.classList.toggle('is-bad', st === 'bad');
+    });
+  });
+
+  // Single values from the sheet
+  dash.draw('cell', (el) => {
+    K.stamp(el);
+    const rows = K.mrows();
+    const w = K.where(el);
+    const r = rows && rows.find((x) => x.grp === w.grp && x.key === w.key && x.period === w.period);
+    const f = el.getAttribute('data-fmt');
+    el.classList.remove('pp-pos', 'pp-neg');
+    if (!r) { el.textContent = '—'; return; }
+    if (f === 'text') { el.textContent = r.text || '—'; return; }
+    if (r.value == null) { el.textContent = '—'; return; }
+    el.textContent = K.fmt[f] ? K.fmt[f](r.value) : String(r.value);
+    if (f === 'sint' || f === 'srp') el.classList.add(r.value >= 0 ? 'pp-pos' : 'pp-neg');
+  });
+
+  // Single values from calculations
+  dash.draw('calc', (el) => {
+    const id = el.getAttribute('data-source');
+    const monthly = true;
+    if (monthly) K.stamp(el);
+    const rows = monthly ? K.mcalc(id) : K.rowsOf(id);
+    const field = el.getAttribute('data-field');
+    let r = null;
+    if (rows) { const w = K.where(el); r = rows.find((x) => Object.keys(w).every((k) => String(x[k]) === w[k])); }
+    const v = r ? r[field] : null;
+    const f = el.getAttribute('data-fmt');
+    el.textContent = v == null ? '—' : K.fmt[f] ? K.fmt[f](v) : String(v);
+    el.classList.remove('pp-pos', 'pp-neg');
+    if (v != null && (f === 'sint' || f === 'srpc')) el.classList.add(v >= 0 ? 'pp-pos' : 'pp-neg');
+  });
+
+  // Working-day progress
+  dash.draw('hkbar', (el) => {
+    const rows = K.mrows();
+    const hk = K.get(rows, 'info', 'hk', '-'), j = K.get(rows, 'info', 'hk_jalan', '-');
+    el.style.width = hk && j != null ? Math.min(100, (j / hk) * 100) + '%' : '0';
+  });
+
+  // Gauge per KPI
+  dash.draw('gauge', (el) => {
+    const rows = K.mrows();
+    const k = el.getAttribute('data-k');
+    const p = K.get(rows, k, 'pct', 'MTD');
+    el.replaceChildren();
+    if (p == null) { el.textContent = '—'; return; }
+    const W = 112, H = 74, r = 48, cx = W / 2, cy = 58;
+    const max = 1.5;
+    const ang = (v) => -Math.PI / 2 + Math.PI * Math.min(v, max) / max;
+    const arc = d3.arc().innerRadius(r - 10).outerRadius(r).cornerRadius(3);
+    const svg = d3.select(el).append('svg').attr('viewBox', `0 0 ${W} ${H}`).attr('width', '100%').attr('height', '100%');
+    const g = svg.append('g').attr('transform', `translate(${cx},${cy})`);
+    g.append('path').attr('d', arc({ startAngle: -Math.PI / 2, endAngle: Math.PI / 2 })).attr('fill', '#232a33');
+    const st = K.status(p);
+    g.append('path').attr('d', arc({ startAngle: -Math.PI / 2, endAngle: ang(p) })).attr('fill', K.C[st]);
+    const ta = ang(1);
+    g.append('line').attr('x1', Math.sin(ta) * (r - 14)).attr('y1', -Math.cos(ta) * (r - 14)).attr('x2', Math.sin(ta) * (r + 4)).attr('y2', -Math.cos(ta) * (r + 4)).attr('stroke', K.C.fg).attr('stroke-width', 2);
+    g.append('text').attr('y', -6).attr('text-anchor', 'middle').attr('fill', K.C[st]).attr('font-size', 20).attr('font-weight', 800).text(K.fmt.pct(p));
+    g.append('text').attr('y', 10).attr('text-anchor', 'middle').attr('fill', K.C.muted).attr('font-size', 9).attr('letter-spacing', '.1em').text('DARI TARGET');
+  });
+
+  // Weekly target vs actual
+  dash.draw('weekly', (el) => {
+    const rows = K.mrows();
+    const k = el.getAttribute('data-k');
+    el.querySelectorAll('svg').forEach((s) => s.remove());
+    if (!rows) return;
+    const weeks = ['W1', 'W2', 'W3', 'W4', 'W5'];
+    const data = weeks.map((w) => ({ w, t: K.get(rows, k, 'target', w), a: K.get(rows, k, 'actual', w), p: K.get(rows, k, 'pct', w) })).filter((d) => d.t != null || d.a != null);
+    if (!data.length) return;
+    const isRp = k === 'rev' || k === 'psdn';
+    const W = Math.max(280, el.clientWidth || 360), H = 230;
+    const yMax = d3.max(data, (d) => Math.max(d.t || 0, d.a || 0)) * 1.18 || 1;
+    const y = d3.scaleLinear([0, yMax], [H - 26, 18]).nice();
+    const ticks = y.ticks(4);
+    const svg = d3.select(el).insert('svg', ':first-child').attr('viewBox', `0 0 ${W} ${H}`).attr('width', '100%').attr('height', H);
+    const tmp = svg.append('text').attr('font-size', 11).text(isRp ? K.axisC(ticks[ticks.length - 1]) : K.idInt.format(ticks[ticks.length - 1]));
+    const ml = Math.ceil(tmp.node().getComputedTextLength()) + 10;
+    tmp.remove();
+    const x = d3.scaleBand(data.map((d) => d.w), [ml, W - 6]).padding(0.28);
+    const xi = d3.scaleBand(['t', 'a'], [0, x.bandwidth()]).padding(0.12);
+    svg.append('g').selectAll('line').data(ticks).join('line').attr('x1', ml).attr('x2', W - 6).attr('y1', (d) => y(d)).attr('y2', (d) => y(d)).attr('stroke', K.C.grid);
+    svg.append('g').selectAll('text').data(ticks).join('text').attr('x', ml - 6).attr('y', (d) => y(d) + 4).attr('text-anchor', 'end').attr('fill', K.C.muted).attr('font-size', 11).text((d) => (isRp ? K.axisC(d) : K.idInt.format(d)));
+    const grp = svg.append('g').selectAll('g').data(data).join('g').attr('transform', (d) => `translate(${x(d.w)},0)`);
+    const bw = Math.min(32, xi.bandwidth());
+    const off = (xi.bandwidth() - bw) / 2;
+    grp.append('rect').attr('x', xi('t') + off).attr('width', bw).attr('y', (d) => y(d.t || 0)).attr('height', (d) => y(0) - y(d.t || 0)).attr('rx', 3).attr('fill', K.C.target);
+    grp.append('rect').attr('x', xi('a') + off).attr('width', bw).attr('y', (d) => y(d.a || 0)).attr('height', (d) => y(0) - y(d.a || 0)).attr('rx', 3).attr('fill', K.C[k]);
+    grp.append('text').attr('x', xi('a') + xi.bandwidth() / 2).attr('y', (d) => Math.max(13, y(Math.max(d.a || 0, d.t || 0)) - 6)).attr('text-anchor', 'middle').attr('font-size', 12).attr('font-weight', 800).attr('fill', (d) => K.C[K.status(d.p)] || K.C.muted).text((d) => (d.p != null ? K.fmt.pct(d.p) : ''));
+    svg.append('g').selectAll('text').data(data).join('text').attr('x', (d) => x(d.w) + x.bandwidth() / 2).attr('y', H - 8).attr('text-anchor', 'middle').attr('fill', K.C.muted).attr('font-size', 12).attr('font-weight', 700).text((d) => d.w);
+    svg.append('line').attr('x1', ml).attr('x2', W - 6).attr('y1', y(0)).attr('y2', y(0)).attr('stroke', '#3a4350');
+    const tip = K.tipFor(el);
+    const f = isRp ? (v) => K.fmt.rp(v) : (v) => K.idInt.format(v) + ' unit';
+    grp.append('rect').attr('x', 0).attr('width', x.bandwidth()).attr('y', 0).attr('height', H - 20).attr('fill', 'transparent')
+      .on('mousemove', (ev, d) => tip.show(ev, d.w, [{ color: K.C.target, text: 'Target ' + (d.t != null ? f(d.t) : '—') }, { color: K.C[k], text: 'Aktual ' + (d.a != null ? f(d.a) : '—') }, { text: 'Pencapaian ' + (d.p != null ? K.fmt.pct(d.p) : '—') }]))
+      .on('mouseleave', () => tip.hide());
+  });
+
+  // Heatmap
+  dash.draw('heat', (el) => {
+    const rows = K.mrows();
+    el.replaceChildren();
+    if (!rows) { el.textContent = '—'; return; }
+    const cols = ['W1', 'W2', 'W3', 'W4', 'W5', 'MTD'];
+    const names = { ue: 'Unit Entry', rev: 'Revenue', cpus: 'CPUS', psdn: 'PSDN' };
+    const add = (cls, text, style) => { const d = document.createElement('div'); d.className = cls; d.textContent = text; if (style) Object.assign(d.style, style); el.appendChild(d); return d; };
+    add('pp-hh', '');
+    cols.forEach((c) => add('pp-hh', c === 'MTD' ? 'Bulan' : c));
+    ['ue', 'rev', 'cpus', 'psdn'].forEach((k) => {
+      add('pp-hk', names[k], { color: K.C[k] });
+      cols.forEach((c) => {
+        const p = K.get(rows, k, 'pct', c);
+        const st = K.status(p);
+        const col = st ? K.C[st] : '#232a33';
+        const fill = st ? d3.color(col).copy({ opacity: c === 'MTD' ? 0.34 : 0.2 }).formatRgb() : '#1c222b';
+        add('pp-hc', p != null ? K.fmt.pct(p) : '—', { background: fill, color: st ? col : K.C.muted, outline: c === 'MTD' ? '1px solid ' + col : 'none' });
+      });
+    });
+  });
+
+  // Daily pace bars (actual per day ÷ target per day, scale 0–150%)
+  dash.draw('dbar', (el) => {
+    const rows = K.mcalc('kpi');
+    const k = el.getAttribute('data-k');
+    const r = rows && rows.find((x) => x.kpi === k);
+    if (!r || !r.target_harian || r.rata_harian == null) { el.style.width = '0'; return; }
+    const idx = r.rata_harian / r.target_harian;
+    el.style.width = Math.min(100, (idx / 1.5) * 100) + '%';
+    el.style.background = K.C[K.status(idx)];
+  });
+
+  // Unit status bars
+  dash.draw('status', (el) => {
+    const rows = K.mrows();
+    el.querySelectorAll('svg').forEach((s) => s.remove());
+    if (!rows) return;
+    const L = [['billing', 'Proses billing'], ['production', 'Production'], ['rawat', 'Rawat jalan'], ['banding', 'Banding asuransi'], ['stoppage', 'Job stoppage'], ['gr', 'Production GR']];
+    const COL = { billing: K.C.rev, production: K.C.ue, rawat: K.C.cpus, banding: K.C.psdn, stoppage: K.C.bad, gr: '#a78bfa' };
+    const data = L.map(([key, name]) => ({ key, name, u: K.get(rows, 'status', key, 'unit'), v: K.get(rows, 'status', key, 'nilai') })).filter((d) => d.u != null);
+    if (!data.length) return;
+    const W = Math.max(280, el.clientWidth || 340), rowH = 38, H = data.length * rowH + 6;
+    const svg = d3.select(el).insert('svg', ':first-child').attr('viewBox', `0 0 ${W} ${H}`).attr('width', '100%').attr('height', H);
+    const tmp = svg.append('text').attr('font-size', 12).attr('font-weight', 700);
+    let ml = 0; data.forEach((d) => { tmp.text(d.name); ml = Math.max(ml, tmp.node().getComputedTextLength()); });
+    tmp.text('Rp 999,9 jt · 9999'); const mr = tmp.node().getComputedTextLength() + 24; tmp.remove();
+    ml = Math.ceil(ml) + 12;
+    const x = d3.scaleLinear([0, d3.max(data, (d) => d.u) || 1], [ml, Math.max(ml + 40, W - mr)]);
+    const g = svg.selectAll('g').data(data).join('g').attr('transform', (d, i) => `translate(0,${i * rowH + 6})`);
+    g.append('text').attr('x', ml - 10).attr('y', 17).attr('text-anchor', 'end').attr('fill', K.C.fg).attr('font-size', 12).attr('font-weight', 700).text((d) => d.name);
+    g.append('rect').attr('x', ml).attr('y', 4).attr('height', 20).attr('rx', 3).attr('width', (d) => Math.max(2, x(d.u) - ml)).attr('fill', (d) => COL[d.key]);
+    g.append('text').attr('x', (d) => x(d.u) + 8).attr('y', 18).attr('fill', K.C.fg).attr('font-size', 12).attr('font-weight', 800).text((d) => K.idInt.format(d.u) + ' unit');
+    g.append('text').attr('x', (d) => x(d.u) + 8).attr('y', 32).attr('fill', K.C.muted).attr('font-size', 10.5).text((d) => (d.v != null ? K.rpc(d.v) : ''));
+    const tip = K.tipFor(el);
+    g.append('rect').attr('x', 0).attr('y', 0).attr('width', W).attr('height', rowH).attr('fill', 'transparent')
+      .on('mousemove', (ev, d) => tip.show(ev, d.name, [{ color: COL[d.key], text: K.idInt.format(d.u) + ' unit' }, { text: d.v != null ? K.fmt.rp(d.v) : 'Nilai tidak tercatat' }]))
+      .on('mouseleave', () => tip.hide());
+  });
+
+  // Damage donut
+  dash.draw('donut', (el) => {
+    const rows = K.mrows();
+    el.querySelectorAll('svg').forEach((s) => s.remove());
+    if (!rows) return;
+    const parts = [['light', 'Light', K.C.cpus], ['medium', 'Medium', K.C.ue], ['heavy', 'Heavy', K.C.bad]].map(([key, name, color]) => ({ key, name, color, v: K.get(rows, 'rusak', key, '-') })).filter((d) => d.v != null);
+    if (!parts.length) return;
+    const panel = K.get(rows, 'rusak', 'panel', '-');
+    const W = Math.max(260, el.clientWidth || 300), H = 230, r = Math.min(H / 2 - 12, 100);
+    const svg = d3.select(el).insert('svg', ':first-child').attr('viewBox', `0 0 ${W} ${H}`).attr('width', '100%').attr('height', H);
+    const g = svg.append('g').attr('transform', `translate(${W / 2},${H / 2})`);
+    const pie = d3.pie().value((d) => d.v).sort(null).padAngle(0.02);
+    const arc = d3.arc().innerRadius(r * 0.62).outerRadius(r).cornerRadius(3);
+    const lab = d3.arc().innerRadius(r * 0.81).outerRadius(r * 0.81);
+    const tip = K.tipFor(el);
+    const arcs = pie(parts);
+    g.selectAll('path').data(arcs).join('path').attr('d', arc).attr('fill', (d) => d.data.color)
+      .on('mousemove', (ev, d) => tip.show(ev, d.data.name, [{ color: d.data.color, text: K.fmt.pct(d.data.v) + ' unit' }]))
+      .on('mouseleave', () => tip.hide());
+    g.selectAll('text.l').data(arcs.filter((d) => d.endAngle - d.startAngle > 0.35)).join('text').attr('class', 'l').attr('transform', (d) => `translate(${lab.centroid(d)})`).attr('text-anchor', 'middle').attr('dy', 4).attr('fill', '#111').attr('font-size', 12).attr('font-weight', 800).text((d) => K.fmt.pct(d.data.v));
+    if (panel != null) {
+      g.append('text').attr('y', -2).attr('text-anchor', 'middle').attr('fill', K.C.fg).attr('font-size', 26).attr('font-weight', 800).text(K.idInt.format(panel));
+      g.append('text').attr('y', 16).attr('text-anchor', 'middle').attr('fill', K.C.muted).attr('font-size', 10).attr('letter-spacing', '.12em').text('TOTAL PANEL');
+    }
+  });
+
+  // PDCA lists
+  dash.draw('pdca', (el) => {
+    const rows = K.mcalc('pdca');
+    const mode = el.getAttribute('data-mode');
+    el.replaceChildren();
+    if (!rows) { el.textContent = '—'; return; }
+    const items = rows.filter((r) => r.status === mode);
+    if (!items.length) {
+      const p = document.createElement('p'); p.className = 'pp-empty';
+      p.textContent = mode === 'pertahankan' ? 'Belum ada KPI yang mencapai target.' : 'Semua KPI sudah di atas target.';
+      el.appendChild(p); return;
+    }
+    items.forEach((r) => {
+      const card = document.createElement('div'); card.className = 'pp-item';
+      const top = document.createElement('div'); top.className = 'pp-item-top';
+      const s = document.createElement('strong'); s.textContent = r.nama;
+      if (K.C[r.item]) s.style.color = K.C[r.item];
+      const e = document.createElement('em'); e.textContent = r.angka; e.style.color = mode === 'pertahankan' ? K.C.ok : K.C.bad;
+      top.append(s, e);
+      const p = document.createElement('p'); p.textContent = r.catatan;
+      card.append(top, p);
+      el.appendChild(card);
+    });
+  });
+
+  // ---- Tahunan ----
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+  const ymap = (rows, k) => MONTHS.map((b, i) => { const r = rows.find((x) => x.kpi === k && x.bulan_no === i + 1); const p = r && r.target && r.actual != null ? r.actual / r.target : null; return { b, t: r ? r.target : null, a: r ? r.actual : null, p }; });
+
+  dash.onData(() => {
+    const rows = K.mcalc('ytd');
+    document.querySelectorAll('.pp-card[data-y]').forEach((card) => {
+      const k = card.getAttribute('data-k');
+      const r = rows && rows.find((x) => x.kpi === k);
+      const st = r ? K.status(r.pct) : null;
+      card.classList.toggle('is-ok', st === 'ok');
+      card.classList.toggle('is-warn', st === 'warn');
+      card.classList.toggle('is-bad', st === 'bad');
+    });
+  });
+
+  dash.draw('ycell', (el) => {
+    K.stamp(el);
+    const rows = K.mcalc('ytd');
+    const w = K.where(el);
+    const r = rows && rows.find((x) => x.kpi === w.kpi);
+    if (!r || r.pct == null) { el.textContent = '—'; el.style.color = ''; return; }
+    el.textContent = K.fmt.pct(r.pct);
+    el.style.color = K.C[K.status(r.pct)];
+  });
+
+  dash.draw('ymissing', (el) => {
+    const rows = K.rowsOf('tahun');
+    if (!rows) { el.textContent = '—'; return; }
+    const miss = MONTHS.filter((b, i) => !rows.some((x) => x.bulan_no === i + 1 && x.actual != null));
+    el.textContent = miss.length ? miss.join(', ') : 'semua bulan lengkap';
+  });
+
+  dash.draw('yheat', (el) => {
+    const rows = K.rowsOf('tahun');
+    el.replaceChildren();
+    if (!rows) return;
+    const names = { ue: 'Unit Entry', rev: 'Revenue', cpus: 'CPUS', psdn: 'PSDN' };
+    const add = (cls, text, style) => { const d = document.createElement('div'); d.className = cls; d.textContent = text; if (style) Object.assign(d.style, style); el.appendChild(d); return d; };
+    add('pp-hh', '');
+    MONTHS.forEach((m) => add('pp-hh', m));
+    ['ue', 'rev', 'cpus', 'psdn'].forEach((k) => {
+      add('pp-hk', names[k], { color: K.C[k] });
+      ymap(rows, k).forEach((d) => {
+        const st = K.status(d.p);
+        const col = st ? K.C[st] : null;
+        add('pp-hc', d.p != null ? K.fmt.pct(d.p) : '·', { background: col ? d3.color(col).copy({ opacity: 0.22 }).formatRgb() : '#1c222b', color: col || K.C.muted });
+      });
+    });
+  });
+
+  dash.draw('ytrend', (el) => {
+    const rows = K.rowsOf('tahun');
+    el.querySelectorAll('svg').forEach((s) => s.remove());
+    if (!rows) return;
+    const ks = ['ue', 'rev', 'cpus', 'psdn'];
+    const series = ks.map((k) => ({ k, pts: ymap(rows, k).map((d, i) => ({ ...d, i })).filter((d) => d.p != null) })).filter((s) => s.pts.length);
+    if (!series.length) return;
+    const W = Math.max(300, el.clientWidth || 600), H = 280, ml = 44, mr = 16, mt = 16, mb = 28;
+    const pmax = Math.max(1.2, d3.max(series, (s) => d3.max(s.pts, (d) => d.p)) * 1.05);
+    const x = d3.scalePoint(MONTHS, [ml, W - mr]).padding(0.3);
+    const y = d3.scaleLinear([0, pmax], [H - mb, mt]).nice();
+    const svg = d3.select(el).insert('svg', ':first-child').attr('viewBox', `0 0 ${W} ${H}`).attr('width', '100%').attr('height', H);
+    const ticks = y.ticks(5);
+    svg.append('g').selectAll('line').data(ticks).join('line').attr('x1', ml).attr('x2', W - mr).attr('y1', (d) => y(d)).attr('y2', (d) => y(d)).attr('stroke', K.C.grid);
+    svg.append('g').selectAll('text').data(ticks).join('text').attr('x', ml - 6).attr('y', (d) => y(d) + 4).attr('text-anchor', 'end').attr('fill', K.C.muted).attr('font-size', 11).text((d) => Math.round(d * 100) + '%');
+    const every = W < 480 ? 2 : 1;
+    svg.append('g').selectAll('text').data(MONTHS.filter((m, i) => i % every === 0)).join('text').attr('x', (d) => x(d)).attr('y', H - 8).attr('text-anchor', 'middle').attr('fill', K.C.muted).attr('font-size', 11).attr('font-weight', 700).text((d) => d);
+    svg.append('line').attr('x1', ml).attr('x2', W - mr).attr('y1', y(1)).attr('y2', y(1)).attr('stroke', K.C.fg).attr('stroke-dasharray', '5 4').attr('opacity', 0.7);
+    const line = d3.line().x((d) => x(d.b)).y((d) => y(d.p));
+    series.forEach((s) => {
+      svg.append('path').attr('d', line(s.pts)).attr('fill', 'none').attr('stroke', K.C[s.k]).attr('stroke-width', 2.5).attr('stroke-linecap', 'round').attr('stroke-linejoin', 'round');
+      svg.append('g').selectAll('circle').data(s.pts).join('circle').attr('cx', (d) => x(d.b)).attr('cy', (d) => y(d.p)).attr('r', 3.5).attr('fill', K.C[s.k]).attr('stroke', '#0c0f13').attr('stroke-width', 1.5);
+    });
+    const tip = K.tipFor(el);
+    const names = { ue: 'Unit Entry', rev: 'Revenue', cpus: 'CPUS', psdn: 'PSDN' };
+    const step = x.step();
+    svg.append('g').selectAll('rect').data(MONTHS).join('rect').attr('x', (d) => x(d) - step / 2).attr('width', step).attr('y', mt).attr('height', H - mt - mb).attr('fill', 'transparent')
+      .on('mousemove', (ev, m) => {
+        const lines = series.map((s) => { const p = s.pts.find((d) => d.b === m); return { color: K.C[s.k], text: names[s.k] + ' ' + (p ? K.fmt.pct(p.p) : '—') }; });
+        tip.show(ev, m, lines);
+      })
+      .on('mouseleave', () => tip.hide());
+  });
+
+  dash.draw('ymonth', (el) => {
+    const rows = K.rowsOf('tahun');
+    const k = el.getAttribute('data-k');
+    el.querySelectorAll('svg').forEach((s) => s.remove());
+    if (!rows) return;
+    const data = ymap(rows, k);
+    if (!data.some((d) => d.a != null)) return;
+    const isRp = k === 'rev' || k === 'psdn';
+    const W = Math.max(300, el.clientWidth || 380), H = 230;
+    const yMax = (d3.max(data, (d) => Math.max(d.t || 0, d.a || 0)) || 1) * 1.18;
+    const y = d3.scaleLinear([0, yMax], [H - 26, 18]).nice();
+    const ticks = y.ticks(4);
+    const svg = d3.select(el).insert('svg', ':first-child').attr('viewBox', `0 0 ${W} ${H}`).attr('width', '100%').attr('height', H);
+    const tmp = svg.append('text').attr('font-size', 11).text(isRp ? K.axisC(ticks[ticks.length - 1]) : K.idInt.format(ticks[ticks.length - 1]));
+    const ml = Math.ceil(tmp.node().getComputedTextLength()) + 10; tmp.remove();
+    const x = d3.scaleBand(MONTHS, [ml, W - 4]).padding(0.22);
+    const xi = d3.scaleBand(['t', 'a'], [0, x.bandwidth()]).padding(0.1);
+    svg.append('g').selectAll('line').data(ticks).join('line').attr('x1', ml).attr('x2', W - 4).attr('y1', (d) => y(d)).attr('y2', (d) => y(d)).attr('stroke', K.C.grid);
+    svg.append('g').selectAll('text').data(ticks).join('text').attr('x', ml - 6).attr('y', (d) => y(d) + 4).attr('text-anchor', 'end').attr('fill', K.C.muted).attr('font-size', 11).text((d) => (isRp ? K.axisC(d) : K.idInt.format(d)));
+    const g = svg.append('g').selectAll('g').data(data).join('g').attr('transform', (d) => `translate(${x(d.b)},0)`);
+    g.append('rect').attr('x', xi('t')).attr('width', xi.bandwidth()).attr('y', (d) => y(d.t || 0)).attr('height', (d) => y(0) - y(d.t || 0)).attr('rx', 2).attr('fill', K.C.target);
+    g.append('rect').attr('x', xi('a')).attr('width', xi.bandwidth()).attr('y', (d) => y(d.a || 0)).attr('height', (d) => y(0) - y(d.a || 0)).attr('rx', 2).attr('fill', (d) => (d.p != null && d.p < 1 ? d3.color(K.C[k]).copy({ opacity: 0.55 }).formatRgb() : K.C[k]));
+    const every = W < 420 ? 2 : 1;
+    svg.append('g').selectAll('text').data(data.filter((d, i) => i % every === 0)).join('text').attr('x', (d) => x(d.b) + x.bandwidth() / 2).attr('y', H - 8).attr('text-anchor', 'middle').attr('fill', K.C.muted).attr('font-size', 11).attr('font-weight', 700).text((d) => d.b);
+    svg.append('line').attr('x1', ml).attr('x2', W - 4).attr('y1', y(0)).attr('y2', y(0)).attr('stroke', '#3a4350');
+    const tip = K.tipFor(el);
+    const f = isRp ? (v) => K.fmt.rp(v) : (v) => K.idInt.format(v) + ' unit';
+    g.append('rect').attr('x', 0).attr('width', x.bandwidth()).attr('y', 0).attr('height', H - 20).attr('fill', 'transparent')
+      .on('mousemove', (ev, d) => tip.show(ev, d.b, [{ color: K.C.target, text: 'Target ' + (d.t != null ? f(d.t) : '—') }, { color: K.C[k], text: 'Aktual ' + (d.a != null ? f(d.a) : '—') }, { text: 'Pencapaian ' + (d.p != null ? K.fmt.pct(d.p) : '—') }]))
+      .on('mouseleave', () => tip.hide());
+  });
+
+  dash.draw('pdcay', (el) => {
+    const rows = K.rowsOf('pdca_tahun');
+    const mode = el.getAttribute('data-mode');
+    el.replaceChildren();
+    if (!rows) return;
+    const items = rows.filter((r) => r.status === mode);
+    if (!items.length) { const p = document.createElement('p'); p.className = 'pp-empty'; p.textContent = mode === 'pertahankan' ? 'Belum ada KPI yang stabil di atas target sepanjang tahun.' : 'Semua KPI stabil di atas target.'; el.appendChild(p); return; }
+    items.forEach((r) => {
+      const card = document.createElement('div'); card.className = 'pp-item';
+      const top = document.createElement('div'); top.className = 'pp-item-top';
+      const s = document.createElement('strong'); s.textContent = r.nama; s.style.color = K.C[r.item];
+      const e = document.createElement('em'); e.textContent = r.angka; e.style.color = mode === 'pertahankan' ? K.C.ok : K.C.bad;
+      top.append(s, e);
+      const p = document.createElement('p'); p.textContent = r.catatan;
+      card.append(top, p); el.appendChild(card);
+    });
+  });
+
+
+  dash.draw('ytdrange', (el) => {
+    const rows = K.mcalc('ytd');
+    const full = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+    const m = K.month();
+    el.textContent = rows && rows.length && m ? 'Januari – ' + full[m - 1] : '—';
+  });
+
+  dash.draw('ytdbar', (el) => {
+    const rows = K.mcalc('ytd');
+    const k = el.getAttribute('data-k');
+    const r = rows && rows.find((x) => x.kpi === k);
+    if (!r || r.pct == null) { el.style.width = '0'; return; }
+    el.style.width = Math.min(100, (r.pct / 1.5) * 100) + '%';
+    el.style.background = K.C[K.status(r.pct)];
+  });
+
+  dash.draw('ycum', (el) => {
+    const all = K.rowsOf('ytd');
+    el.querySelectorAll('svg').forEach((s) => s.remove());
+    if (!all) return;
+    const m = K.month();
+    const rows = all.filter((r) => m == null || r.bulan_no <= m);
+    const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+    const ks = ['ue', 'rev', 'cpus', 'psdn'];
+    const series = ks.map((k) => ({ k, pts: rows.filter((r) => r.kpi === k && r.pct != null).sort((a, b) => a.bulan_no - b.bulan_no) })).filter((s) => s.pts.length);
+    if (!series.length) return;
+    const months = [...new Set(rows.filter((r) => r.pct != null).map((r) => r.bulan_no))].sort((a, b) => a - b).map((n) => MON[n - 1]);
+    const W = Math.max(300, el.clientWidth || 600), H = 260, ml = 44, mr = 16, mt = 14, mb = 28;
+    const pmax = Math.max(1.2, d3.max(series, (s) => d3.max(s.pts, (d) => d.pct)) * 1.05);
+    const pmin = Math.min(0.8, d3.min(series, (s) => d3.min(s.pts, (d) => d.pct)) * 0.95);
+    const x = d3.scalePoint(months, [ml, W - mr]).padding(0.3);
+    const y = d3.scaleLinear([pmin, pmax], [H - mb, mt]).nice();
+    const svg = d3.select(el).insert('svg', ':first-child').attr('viewBox', `0 0 ${W} ${H}`).attr('width', '100%').attr('height', H);
+    const ticks = y.ticks(5);
+    svg.append('g').selectAll('line').data(ticks).join('line').attr('x1', ml).attr('x2', W - mr).attr('y1', (d) => y(d)).attr('y2', (d) => y(d)).attr('stroke', K.C.grid);
+    svg.append('g').selectAll('text').data(ticks).join('text').attr('x', ml - 6).attr('y', (d) => y(d) + 4).attr('text-anchor', 'end').attr('fill', K.C.muted).attr('font-size', 11).text((d) => Math.round(d * 100) + '%');
+    svg.append('g').selectAll('text').data(months).join('text').attr('x', (d) => x(d)).attr('y', H - 8).attr('text-anchor', 'middle').attr('fill', K.C.muted).attr('font-size', 11).attr('font-weight', 700).text((d) => d);
+    svg.append('line').attr('x1', ml).attr('x2', W - mr).attr('y1', y(1)).attr('y2', y(1)).attr('stroke', K.C.fg).attr('stroke-dasharray', '5 4').attr('opacity', 0.7);
+    const line = d3.line().x((d) => x(MON[d.bulan_no - 1])).y((d) => y(d.pct));
+    series.forEach((s) => {
+      svg.append('path').attr('d', line(s.pts)).attr('fill', 'none').attr('stroke', K.C[s.k]).attr('stroke-width', 2.5).attr('stroke-linecap', 'round').attr('stroke-linejoin', 'round');
+      svg.append('g').selectAll('circle').data(s.pts).join('circle').attr('cx', (d) => x(MON[d.bulan_no - 1])).attr('cy', (d) => y(d.pct)).attr('r', 3.5).attr('fill', K.C[s.k]).attr('stroke', '#0c0f13').attr('stroke-width', 1.5);
+    });
+    const tip = K.tipFor(el);
+    const names = { ue: 'Unit Entry', rev: 'Revenue', cpus: 'CPUS', psdn: 'PSDN' };
+    const step = x.step();
+    svg.append('g').selectAll('rect').data(months).join('rect').attr('x', (d) => x(d) - step / 2).attr('width', step).attr('y', mt).attr('height', H - mt - mb).attr('fill', 'transparent')
+      .on('mousemove', (ev, mo) => tip.show(ev, 'YTD s/d ' + mo, series.map((s) => { const p = s.pts.find((d) => MON[d.bulan_no - 1] === mo); return { color: K.C[s.k], text: names[s.k] + ' ' + (p ? K.fmt.pct(p.pct) : '—') }; })))
+      .on('mouseleave', () => tip.hide());
+  });
+
+
+  // ---- YTD visual ----
+  window.ppYtdK = window.ppYtdK || 'ue';
+  document.querySelectorAll('.pp-kbtn').forEach((btn) => btn.addEventListener('click', () => {
+    window.ppYtdK = btn.getAttribute('data-k');
+    document.querySelectorAll('.pp-kbtn').forEach((b2) => b2.setAttribute('aria-pressed', String(b2 === btn)));
+    dash.draw('ycombo'); dash.draw('ygapbars');
+  }));
+  const MONY = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+  const isRpK = (k) => k === 'rev' || k === 'psdn';
+  const fmtK = (k, v) => (isRpK(k) ? K.rpc(v) : K.idInt.format(v) + ' unit');
+  const sgnK = (k, v) => (v > 0 ? '+' : '') + (isRpK(k) ? K.rpc(v) : K.idInt.format(v));
+
+  dash.onData(() => {
+    const rows = K.mcalc('ytd');
+    document.querySelectorAll('.pp-ycard[data-k]').forEach((card) => {
+      const r = rows && rows.find((x) => x.kpi === card.getAttribute('data-k'));
+      const st = r ? K.status(r.pct) : null;
+      card.classList.toggle('is-ok', st === 'ok'); card.classList.toggle('is-warn', st === 'warn'); card.classList.toggle('is-bad', st === 'bad');
+    });
+  });
+
+  dash.draw('ysummary', (el) => {
+    const rows = K.mcalc('analisa_ytd');
+    const r = rows && rows.find((x) => x.kpi === 'semua');
+    el.textContent = r ? r.p1 : '—';
+  });
+
+  dash.draw('ygauge', (el) => {
+    const rows = K.mcalc('ytd');
+    const k = el.getAttribute('data-k');
+    const r = rows && rows.find((x) => x.kpi === k);
+    el.replaceChildren();
+    if (!r || r.pct == null) return;
+    const S = 104, R = 46, w = 10, max = 1.5;
+    const st = K.status(r.pct);
+    const svg = d3.select(el).append('svg').attr('viewBox', `0 0 ${S} ${S}`).attr('width', '100%').attr('height', '100%');
+    const g = svg.append('g').attr('transform', `translate(${S / 2},${S / 2})`);
+    const arc = d3.arc().innerRadius(R - w).outerRadius(R).cornerRadius(5);
+    const a0 = -0.75 * Math.PI, span = 1.5 * Math.PI;
+    g.append('path').attr('d', arc({ startAngle: a0, endAngle: a0 + span })).attr('fill', '#232a33');
+    const end = a0 + span * Math.min(r.pct, max) / max;
+    const path = g.append('path').attr('fill', K.C[k]);
+    const draw = (t) => path.attr('d', arc({ startAngle: a0, endAngle: a0 + (end - a0) * t }));
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce || el.dataset.drawn) draw(1); else { el.dataset.drawn = '1'; d3.transition().duration(900).ease(d3.easeCubicOut).tween('arc', () => draw); }
+    const ta = a0 + span / max;
+    g.append('line').attr('x1', Math.sin(ta) * (R - w - 4)).attr('y1', -Math.cos(ta) * (R - w - 4)).attr('x2', Math.sin(ta) * (R + 4)).attr('y2', -Math.cos(ta) * (R + 4)).attr('stroke', K.C.fg).attr('stroke-width', 2);
+    g.append('text').attr('y', 4).attr('text-anchor', 'middle').attr('fill', K.C[st]).attr('font-size', 22).attr('font-weight', 900).text(K.fmt.pct(r.pct));
+    g.append('text').attr('y', 20).attr('text-anchor', 'middle').attr('fill', K.C.muted).attr('font-size', 8.5).attr('letter-spacing', '.12em').text('YTD');
+  });
+
+  dash.draw('yspark', (el) => {
+    const all = K.rowsOf('ytd');
+    const k = el.getAttribute('data-k');
+    el.querySelectorAll('svg').forEach((s) => s.remove());
+    const m = K.month();
+    if (!all || m == null) return;
+    const pts = all.filter((r) => r.kpi === k && r.pct != null && r.bulan_no <= m).sort((a, b) => a.bulan_no - b.bulan_no);
+    if (pts.length < 2) return;
+    const W = Math.max(160, el.clientWidth || 220), H = 44;
+    const lo = Math.min(0.9, d3.min(pts, (d) => d.pct)), hi = Math.max(1.1, d3.max(pts, (d) => d.pct));
+    const x = d3.scaleLinear([pts[0].bulan_no, pts[pts.length - 1].bulan_no], [4, W - 40]);
+    const y = d3.scaleLinear([lo, hi], [H - 6, 6]);
+    const svg = d3.select(el).insert('svg', ':first-child').attr('viewBox', `0 0 ${W} ${H}`).attr('width', '100%').attr('height', H);
+    const id = 'ysg-' + k;
+    const gr = svg.append('defs').append('linearGradient').attr('id', id).attr('x1', 0).attr('x2', 0).attr('y1', 0).attr('y2', 1);
+    [[0, .35], [1, 0]].forEach(([o, a]) => gr.append('stop').attr('offset', o).attr('stop-color', K.C[k]).attr('stop-opacity', a));
+    svg.append('line').attr('x1', 4).attr('x2', W - 40).attr('y1', y(1)).attr('y2', y(1)).attr('stroke', K.C.fg).attr('stroke-dasharray', '3 3').attr('opacity', 0.45);
+    svg.append('path').attr('d', d3.area().x((d) => x(d.bulan_no)).y0(H - 2).y1((d) => y(d.pct))(pts)).attr('fill', `url(#${id})`);
+    svg.append('path').attr('d', d3.line().x((d) => x(d.bulan_no)).y((d) => y(d.pct))(pts)).attr('fill', 'none').attr('stroke', K.C[k]).attr('stroke-width', 2).attr('stroke-linecap', 'round').attr('stroke-linejoin', 'round');
+    const last = pts[pts.length - 1];
+    svg.append('circle').attr('cx', x(last.bulan_no)).attr('cy', y(last.pct)).attr('r', 3.5).attr('fill', K.C[k]);
+    svg.append('text').attr('x', W - 34).attr('y', Math.max(11, Math.min(H - 3, y(last.pct) + 4))).attr('fill', K.C.muted).attr('font-size', 10).attr('font-weight', 700).text(MONY[last.bulan_no - 1]);
+  });
+
+  dash.draw('ycombo', (el) => {
+    const all = K.rowsOf('ytd');
+    const k = window.ppYtdK || 'ue';
+    el.querySelectorAll('svg').forEach((s) => s.remove());
+    const m = K.month();
+    if (!all || m == null) return;
+    const pts = all.filter((r) => r.kpi === k && r.actual != null && r.bulan_no <= m).sort((a, b) => a.bulan_no - b.bulan_no);
+    if (!pts.length) return;
+    const W = Math.max(300, el.clientWidth || 640), H = 300, mt = 20, mb = 30;
+    const yMax = d3.max(pts, (d) => Math.max(d.actual, d.target)) * 1.08;
+    const y = d3.scaleLinear([0, yMax], [H - mb, mt]).nice();
+    const ticks = y.ticks(5);
+    const svg = d3.select(el).insert('svg', ':first-child').attr('viewBox', `0 0 ${W} ${H}`).attr('width', '100%').attr('height', H);
+    const tmp = svg.append('text').attr('font-size', 11).text(isRpK(k) ? K.axisC(ticks[ticks.length - 1]) : K.idInt.format(ticks[ticks.length - 1]));
+    const ml = Math.ceil(tmp.node().getComputedTextLength()) + 10; tmp.remove();
+    const lastP = pts[pts.length - 1];
+    const endA = 'Aktual ' + (isRpK(k) ? K.rpc(lastP.actual) : K.idInt.format(lastP.actual));
+    const endT = 'Target ' + (isRpK(k) ? K.rpc(lastP.target) : K.idInt.format(lastP.target));
+    const tmp2 = svg.append('text').attr('font-size', 11.5).attr('font-weight', 800);
+    let mr = 0; [endA, endT].forEach((s) => { tmp2.text(s); mr = Math.max(mr, tmp2.node().getComputedTextLength()); });
+    mr = Math.ceil(mr) + 22; tmp2.remove();
+    const x = d3.scalePoint(pts.map((d) => MONY[d.bulan_no - 1]), [ml + 8, W - mr]).padding(pts.length === 1 ? 0.5 : 0.1);
+    const X = (d) => x(MONY[d.bulan_no - 1]);
+    svg.append('g').selectAll('line').data(ticks).join('line').attr('x1', ml).attr('x2', W - mr + 8).attr('y1', (d) => y(d)).attr('y2', (d) => y(d)).attr('stroke', K.C.grid);
+    svg.append('g').selectAll('text').data(ticks).join('text').attr('x', ml - 6).attr('y', (d) => y(d) + 4).attr('text-anchor', 'end').attr('fill', K.C.muted).attr('font-size', 11).text((d) => (isRpK(k) ? K.axisC(d) : K.idInt.format(d)));
+    svg.append('g').selectAll('text').data(pts).join('text').attr('x', X).attr('y', H - 9).attr('text-anchor', 'middle').attr('fill', K.C.muted).attr('font-size', 11).attr('font-weight', 700).text((d) => MONY[d.bulan_no - 1]);
+    const gid = 'ycg-' + k;
+    const gr = svg.append('defs').append('linearGradient').attr('id', gid).attr('x1', 0).attr('x2', 0).attr('y1', 0).attr('y2', 1);
+    [[0, .30], [.5, .10], [1, 0]].forEach(([o, a]) => gr.append('stop').attr('offset', o).attr('stop-color', K.C[k]).attr('stop-opacity', a));
+    svg.append('path').attr('d', d3.area().x(X).y0(y(0)).y1((d) => y(d.actual))(pts)).attr('fill', `url(#${gid})`);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const da = a.actual - a.target, db = b.actual - b.target;
+      const poly = (p, c) => svg.append('path').attr('d', 'M' + p.map((q) => q.join(',')).join('L') + 'Z').attr('fill', c).attr('opacity', 0.32);
+      const P = (d, v) => [X(d), y(v)];
+      if ((da >= 0) === (db >= 0)) poly([P(a, a.actual), P(b, b.actual), P(b, b.target), P(a, a.target)], da >= 0 ? K.C.ok : K.C.bad);
+      else {
+        const t = da / (da - db), xm = X(a) + (X(b) - X(a)) * t, vm = a.target + (b.target - a.target) * t;
+        poly([P(a, a.actual), [xm, y(vm)], P(a, a.target)], da >= 0 ? K.C.ok : K.C.bad);
+        poly([[xm, y(vm)], P(b, b.actual), P(b, b.target)], db >= 0 ? K.C.ok : K.C.bad);
+      }
+    }
+    svg.append('path').attr('d', d3.line().x(X).y((d) => y(d.target))(pts)).attr('fill', 'none').attr('stroke', K.C.fg).attr('stroke-width', 1.6).attr('stroke-dasharray', '6 4').attr('opacity', 0.8);
+    svg.append('path').attr('d', d3.line().x(X).y((d) => y(d.actual))(pts)).attr('fill', 'none').attr('stroke', K.C[k]).attr('stroke-width', 3).attr('stroke-linecap', 'round').attr('stroke-linejoin', 'round');
+    svg.append('g').selectAll('circle').data(pts).join('circle').attr('cx', X).attr('cy', (d) => y(d.actual)).attr('r', 4).attr('fill', K.C[k]).attr('stroke', '#0c0f13').attr('stroke-width', 2);
+    let ya = y(lastP.actual), yt = y(lastP.target);
+    if (Math.abs(ya - yt) < 16) { const mid = (ya + yt) / 2, dir = ya <= yt ? -1 : 1; ya = mid + dir * 8; yt = mid - dir * 8; }
+    ya = Math.max(12, Math.min(H - mb - 4, ya)); yt = Math.max(12, Math.min(H - mb - 4, yt));
+    svg.append('text').attr('x', X(lastP) + 10).attr('y', ya + 4).attr('fill', K.C[k]).attr('font-size', 11.5).attr('font-weight', 800).text(endA);
+    svg.append('text').attr('x', X(lastP) + 10).attr('y', yt + 4).attr('fill', K.C.muted).attr('font-size', 11.5).attr('font-weight', 700).text(endT);
+    const tip = K.tipFor(el);
+    const step = pts.length > 1 ? x.step() : W;
+    svg.append('g').selectAll('rect').data(pts).join('rect').attr('x', (d) => X(d) - step / 2).attr('width', step).attr('y', mt).attr('height', H - mt - mb).attr('fill', 'transparent')
+      .on('mousemove', (ev, d) => tip.show(ev, 'YTD s/d ' + MONY[d.bulan_no - 1], [{ color: K.C[k], text: 'Aktual ' + fmtK(k, d.actual) }, { color: K.C.fg, text: 'Target ' + fmtK(k, d.target) }, { color: d.gap >= 0 ? K.C.ok : K.C.bad, text: (d.gap >= 0 ? 'Surplus ' : 'Kekurangan ') + sgnK(k, d.gap) + ' · ' + K.fmt.pct(d.pct) }]))
+      .on('mouseleave', () => tip.hide());
+  });
+
+  dash.draw('ygapbars', (el) => {
+    const rows = K.rowsOf('tahun');
+    const k = window.ppYtdK || 'ue';
+    el.querySelectorAll('svg').forEach((s) => s.remove());
+    const m = K.month();
+    if (!rows || m == null) return;
+    let cum = 0;
+    const pts = rows.filter((r) => r.kpi === k && r.bulan_no <= m && r.target != null && r.actual != null).sort((a, b) => a.bulan_no - b.bulan_no).map((r) => { const gap = r.actual - r.target; cum += gap; return { b: MONY[r.bulan_no - 1], gap, cum }; });
+    if (!pts.length) return;
+    const W = Math.max(300, el.clientWidth || 640), H = 260, mt = 22, mb = 30;
+    const lo = Math.min(0, d3.min(pts, (d) => Math.min(d.gap, d.cum))), hi = Math.max(0, d3.max(pts, (d) => Math.max(d.gap, d.cum)));
+    const pad = (hi - lo) * 0.12 || 1;
+    const y = d3.scaleLinear([lo - pad, hi + pad], [H - mb, mt]).nice();
+    const ticks = y.ticks(5);
+    const svg = d3.select(el).insert('svg', ':first-child').attr('viewBox', `0 0 ${W} ${H}`).attr('width', '100%').attr('height', H);
+    const tmp = svg.append('text').attr('font-size', 11);
+    let ml = 0; ticks.forEach((t) => { tmp.text(isRpK(k) ? K.axisC(t) : K.idInt.format(t)); ml = Math.max(ml, tmp.node().getComputedTextLength()); }); tmp.remove();
+    ml = Math.ceil(ml) + 10;
+    const x = d3.scaleBand(pts.map((d) => d.b), [ml, W - 8]).padding(0.3);
+    svg.append('g').selectAll('line').data(ticks).join('line').attr('x1', ml).attr('x2', W - 8).attr('y1', (d) => y(d)).attr('y2', (d) => y(d)).attr('stroke', K.C.grid);
+    svg.append('g').selectAll('text').data(ticks).join('text').attr('x', ml - 6).attr('y', (d) => y(d) + 4).attr('text-anchor', 'end').attr('fill', K.C.muted).attr('font-size', 11).text((d) => (isRpK(k) ? K.axisC(d) : K.idInt.format(d)));
+    svg.append('line').attr('x1', ml).attr('x2', W - 8).attr('y1', y(0)).attr('y2', y(0)).attr('stroke', K.C.fg).attr('opacity', 0.6);
+    const bw = Math.min(34, x.bandwidth());
+    const off = (x.bandwidth() - bw) / 2;
+    svg.append('g').selectAll('rect').data(pts).join('rect').attr('x', (d) => x(d.b) + off).attr('width', bw).attr('y', (d) => y(Math.max(0, d.gap))).attr('height', (d) => Math.max(1, Math.abs(y(d.gap) - y(0)))).attr('rx', 3).attr('fill', (d) => (d.gap >= 0 ? K.C.ok : K.C.bad));
+    const short = (v) => (v > 0 ? '+' : '') + (isRpK(k) ? K.axisC(v) : K.idInt.format(v));
+    const showLab = x.bandwidth() >= 26;
+    if (showLab) svg.append('g').selectAll('text').data(pts).join('text').attr('x', (d) => x(d.b) + x.bandwidth() / 2).attr('y', (d) => Math.max(12, Math.min(H - mb - 2, d.gap >= 0 ? y(d.gap) - 6 : y(d.gap) + 14))).attr('text-anchor', 'middle').attr('font-size', 10.5).attr('font-weight', 800).attr('fill', (d) => (d.gap >= 0 ? K.C.ok : K.C.bad)).text((d) => short(d.gap));
+    const cx = (d) => x(d.b) + x.bandwidth() / 2;
+    svg.append('path').attr('d', d3.line().x(cx).y((d) => y(d.cum))(pts)).attr('fill', 'none').attr('stroke', K.C.ue).attr('stroke-width', 2.5).attr('stroke-linejoin', 'round');
+    svg.append('g').selectAll('circle').data(pts).join('circle').attr('cx', cx).attr('cy', (d) => y(d.cum)).attr('r', 3.5).attr('fill', K.C.ue).attr('stroke', '#0c0f13').attr('stroke-width', 1.5);
+    svg.append('g').selectAll('text').data(pts).join('text').attr('x', cx).attr('y', H - 9).attr('text-anchor', 'middle').attr('fill', K.C.muted).attr('font-size', 11).attr('font-weight', 700).text((d) => d.b);
+    const tip = K.tipFor(el);
+    svg.append('g').selectAll('rect.h').data(pts).join('rect').attr('class', 'h').attr('x', (d) => x(d.b) - x.step() * x.paddingInner() / 2).attr('width', x.step()).attr('y', mt).attr('height', H - mt - mb).attr('fill', 'transparent')
+      .on('mousemove', (ev, d) => tip.show(ev, d.b, [{ color: d.gap >= 0 ? K.C.ok : K.C.bad, text: 'Bulan ini ' + sgnK(k, d.gap) }, { color: K.C.ue, text: 'Akumulasi ' + sgnK(k, d.cum) }]))
+      .on('mouseleave', () => tip.hide());
+  });
+
+  dash.draw('yanalisa', (el) => {
+    const rows = K.mcalc('analisa_ytd');
+    el.replaceChildren();
+    if (!rows) return;
+    const ST = { aman: ['Aman', K.C.ok], tipis: ['Tipis', K.C.warn], waspada: ['Waspada', K.C.warn], kritis: ['Kritis', K.C.bad] };
+    rows.filter((r) => r.kpi !== 'semua').forEach((r) => {
+      const c = document.createElement('div'); c.className = 'pp-acard'; c.style.borderTopColor = K.C[r.kpi];
+      const top = document.createElement('div'); top.className = 'pp-acard-top';
+      const s = document.createElement('strong'); s.textContent = r.nama; s.style.color = K.C[r.kpi];
+      const chip = document.createElement('span'); chip.className = 'pp-achip'; const st = ST[r.status] || ['', K.C.muted]; chip.textContent = st[0]; chip.style.color = st[1];
+      top.append(s, chip);
+      const ul = document.createElement('ul');
+      [r.p1, r.p2, r.p3, r.p4].filter(Boolean).forEach((t) => { const li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
+      c.append(top, ul); el.appendChild(c);
+    });
+  });
+
+
+  // Tampilkan / sembunyikan YTD
+  document.querySelectorAll('.pp-ytoggle:not(.pp-btoggle)').forEach((btn) => btn.addEventListener('click', () => {
+    const open = btn.getAttribute('aria-expanded') !== 'true';
+    btn.setAttribute('aria-expanded', String(open));
+    document.querySelectorAll('#ytd-body').forEach((b) => { b.hidden = !open; });
+    btn.querySelectorAll('.pp-yt-hide').forEach((s) => { s.hidden = !open; });
+    btn.querySelectorAll('.pp-yt-show').forEach((s) => { s.hidden = open; });
+    document.querySelectorAll('#ytd').forEach((s) => s.classList.toggle('is-collapsed', !open));
+  }));
+
+  // Analisa bulan berjalan
+  dash.draw('bsummary', (el) => {
+    const rows = K.mcalc('analisa_bulan');
+    const r = rows && rows.find((x) => x.kpi === 'semua');
+    el.textContent = r ? r.p1 : '—';
+  });
+  dash.draw('banalisa', (el) => {
+    const rows = K.mcalc('analisa_bulan');
+    el.replaceChildren();
+    if (!rows) return;
+    rows.filter((r) => r.kpi !== 'semua').forEach((r) => {
+      const c = document.createElement('div'); c.className = 'pp-acard'; c.style.borderTopColor = K.C[r.kpi];
+      const top = document.createElement('div'); top.className = 'pp-acard-top';
+      const s = document.createElement('strong'); s.textContent = r.nama; s.style.color = K.C[r.kpi];
+      const chip = document.createElement('span'); chip.className = 'pp-achip'; chip.textContent = r.label + ' · ' + K.fmt.pct(r.pct); chip.style.color = K.C[r.status];
+      top.append(s, chip);
+      const ul = document.createElement('ul');
+      [r.p1, r.p2, r.p3, r.p4].filter(Boolean).forEach((t) => { const li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
+      c.append(top, ul); el.appendChild(c);
+    });
+  });
+
+  document.querySelectorAll('.pp-btoggle').forEach((btn) => btn.addEventListener('click', () => {
+    const open = btn.getAttribute('aria-expanded') !== 'true';
+    btn.setAttribute('aria-expanded', String(open));
+    document.querySelectorAll('#analisa-bulan-body').forEach((b) => { b.hidden = !open; });
+    btn.querySelectorAll('.pp-yt-hide').forEach((s) => { s.hidden = !open; });
+    btn.querySelectorAll('.pp-yt-show').forEach((s) => { s.hidden = open; });
+  }));
+})();
+</script>
+
+</div>
+</body>
+</html>
