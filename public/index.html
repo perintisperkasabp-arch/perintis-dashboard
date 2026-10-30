@@ -547,9 +547,9 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
       <div class="pp-box" id="analisa-bulan" style="margin-top:14px">
         <div class="pp-yhead">
           <h3>Analisa bulan berjalan</h3>
-          <button type="button" class="pp-ytoggle pp-btoggle" aria-expanded="true" aria-controls="analisa-bulan-body"><span class="pp-yt-hide">Sembunyikan ▲</span><span class="pp-yt-show" hidden>Tampilkan ▼</span></button>
+          <button type="button" class="pp-ytoggle pp-btoggle" aria-expanded="false" aria-controls="analisa-bulan-body"><span class="pp-yt-hide" hidden>Sembunyikan ▲</span><span class="pp-yt-show">Tampilkan ▼</span></button>
         </div>
-        <div id="analisa-bulan-body">
+        <div id="analisa-bulan-body" hidden>
           <p class="pp-note">Dibuat otomatis dari sheet Dashboard bulan yang dipilih: target vs aktual, pola mingguan, laju per hari kerja, dan kebutuhan per hari.</p>
           <div class="pp-ysum"><span class="pp-ysum-tag">Ringkasan</span><p data-draw="bsummary" data-source="analisa_bulan">—</p></div>
           <div class="pp-alist" data-draw="banalisa" data-source="analisa_bulan"></div>
@@ -755,7 +755,11 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
     </section>
 
     <section aria-labelledby="h-ops" id="operasional">
-      <h2 class="pp-h2" id="h-ops">Kondisi bengkel hari ini</h2>
+      <div class="pp-yhead">
+        <h2 class="pp-h2" id="h-ops">Kondisi bengkel hari ini</h2>
+        <button type="button" class="pp-ytoggle pp-otoggle" id="ops-toggle" aria-expanded="false" aria-controls="ops-body"><span class="pp-yt-hide" hidden>Sembunyikan ▲</span><span class="pp-yt-show">Tampilkan ▼</span></button>
+      </div>
+      <div id="ops-body" hidden>
       <p class="pp-sub">Unit yang masih di proses, jenis kerusakan, dan nilai pekerjaan yang belum jadi uang.</p>
       <div class="pp-ops">
         <div class="pp-box" id="status-unit">
@@ -778,6 +782,7 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
             <div class="pp-wip-row tot"><span>Total</span><b data-draw="cell" data-fmt="rp" data-source="ue_all" data-field="value" data-where="grp=wip&amp;key=total&amp;period=-">—</b></div>
           </div>
         </div>
+      </div>
       </div>
     </section>
 
@@ -2007,7 +2012,7 @@ dash.calc('analisa_bulan', {
 
 
   // Tampilkan / sembunyikan YTD
-  document.querySelectorAll('.pp-ytoggle:not(.pp-btoggle)').forEach((btn) => btn.addEventListener('click', () => {
+  document.querySelectorAll('.pp-ytoggle:not(.pp-btoggle):not(.pp-otoggle)').forEach((btn) => btn.addEventListener('click', () => {
     const open = btn.getAttribute('aria-expanded') !== 'true';
     btn.setAttribute('aria-expanded', String(open));
     document.querySelectorAll('#ytd-body').forEach((b) => { b.hidden = !open; });
@@ -2042,6 +2047,15 @@ dash.calc('analisa_bulan', {
     const open = btn.getAttribute('aria-expanded') !== 'true';
     btn.setAttribute('aria-expanded', String(open));
     document.querySelectorAll('#analisa-bulan-body').forEach((b) => { b.hidden = !open; });
+    btn.querySelectorAll('.pp-yt-hide').forEach((s) => { s.hidden = !open; });
+    btn.querySelectorAll('.pp-yt-show').forEach((s) => { s.hidden = open; });
+  }));
+
+  // Tampilkan / sembunyikan Kondisi bengkel hari ini
+  document.querySelectorAll('.pp-otoggle').forEach((btn) => btn.addEventListener('click', () => {
+    const open = btn.getAttribute('aria-expanded') !== 'true';
+    btn.setAttribute('aria-expanded', String(open));
+    document.querySelectorAll('#ops-body').forEach((b) => { b.hidden = !open; });
     btn.querySelectorAll('.pp-yt-hide').forEach((s) => { s.hidden = !open; });
     btn.querySelectorAll('.pp-yt-show').forEach((s) => { s.hidden = open; });
   }));
