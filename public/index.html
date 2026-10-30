@@ -956,7 +956,7 @@ dash.loader('ue_all', {
     if (rem) {
       const LAB = { 'UE': 'ue', 'CPUS': 'cpus', 'Rev.Total': 'rev', 'PSDN': 'psdn' };
       for (let rr = rem[0] + 1; rr < Math.min(grid.length, rem[0] + 25); rr++)
-        for (let c = rem[1] - 4; c <= rem[1] + 4; c++) if (LAB[at(rr, c)]) push('sisa', LAB[at(rr, c)], '-', nextVal(rr, c));
+        for (let c = Math.max(0, rem[1] - 15); c <= rem[1] + 6; c++) if (LAB[at(rr, c)] && !isHeader(rr)) { push('sisa', LAB[at(rr, c)], '-', nextVal(rr, c)); break; }
     }
 
     [['HEAVY', 'heavy'], ['MEDIUM', 'medium'], ['LIGHT', 'light'], ['Total Panel', 'panel']].forEach(([lab, key]) => {
@@ -1387,9 +1387,13 @@ dash.calc('analisa_bulan', {
     const r = rows && rows.find((x) => x.grp === w.grp && x.key === w.key && x.period === w.period);
     const f = el.getAttribute('data-fmt');
     el.classList.remove('pp-pos', 'pp-neg');
-    if (!r) { el.textContent = '—'; return; }
+    if (!r) { el.textContent = w.grp === 'sisa' && K.get(rows, 'info', 'sisa_hk', '-') === 0 ? 'Bulan selesai' : '—'; return; }
     if (f === 'text') { el.textContent = r.text || '—'; return; }
-    if (r.value == null) { el.textContent = '—'; return; }
+    if (r.value == null) {
+      const sisaHk = K.get(rows, 'info', 'sisa_hk', '-');
+      el.textContent = w.grp === 'sisa' && sisaHk === 0 ? 'Bulan selesai' : '—';
+      return;
+    }
     el.textContent = K.fmt[f] ? K.fmt[f](r.value) : String(r.value);
     if (f === 'sint' || f === 'srp') el.classList.add(r.value >= 0 ? 'pp-pos' : 'pp-neg');
   });
