@@ -52,6 +52,11 @@ async function drive(path, params) {
   return Buffer.from(r.data);
 }
 
+async function gget(url) {
+  const r = await google().request({ url });
+  return r.data;
+}
+
 const TITLE_RE = /UNIT ENTRY/i;
 
-module.exports = { COOKIE, token, requireAuth, isAuthed, drive, TITLE_RE };
+module.exports = { COOKIE, token, requireAuth, isAuthed, drive, gget, TITLE_RE };
