@@ -557,12 +557,12 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
       </div>
     </section>
 
-    <section id="ytd" aria-labelledby="h-ytd">
+    <section id="ytd" class="is-collapsed" aria-labelledby="h-ytd">
       <div class="pp-yhead">
         <h2 class="pp-h2" id="h-ytd">Year to date: <span data-draw="ytdrange" data-source="ytd">—</span></h2>
-        <button type="button" class="pp-ytoggle" id="ytd-toggle" aria-expanded="true" aria-controls="ytd-body"><span class="pp-yt-hide">Sembunyikan ▲</span><span class="pp-yt-show" hidden>Tampilkan ▼</span></button>
+        <button type="button" class="pp-ytoggle" id="ytd-toggle" aria-expanded="false" aria-controls="ytd-body"><span class="pp-yt-hide" hidden>Sembunyikan ▲</span><span class="pp-yt-show">Tampilkan ▼</span></button>
       </div>
-      <div id="ytd-body">
+      <div id="ytd-body" hidden>
       <p class="pp-sub">Akumulasi target dan pencapaian dari Januari sampai bulan yang dipilih. Bulan yang sheet Dashboard-nya kosong tidak dihitung.</p>
       <div class="pp-ysum" id="ytd-ringkas">
         <span class="pp-ysum-tag">Ringkasan</span>
