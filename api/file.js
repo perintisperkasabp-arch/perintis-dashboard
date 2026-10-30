@@ -9,7 +9,7 @@ module.exports = async (req, res) => {
     const meta = JSON.parse((await drive('files/' + id, { fields: 'id,name,mimeType', supportsAllDrives: 'true' })).toString('utf8'));
     if (!TITLE_RE.test(meta.name || '')) return res.status(403).json({ error: 'File ini bukan file UNIT ENTRY' });
     const csv = await drive('files/' + id + '/export', { mimeType: 'text/csv' });
-    res.setHeader('Cache-Control', 'private, max-age=120');
+    res.setHeader('Cache-Control', 'no-store');
     res.status(200).json({ id, title: meta.name, mimeType: 'text/csv', content: csv.toString('base64') });
   } catch (e) {
     res.status(500).json({ error: String((e && e.message) || e) });

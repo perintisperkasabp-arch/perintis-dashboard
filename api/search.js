@@ -20,7 +20,7 @@ module.exports = async (req, res) => {
       pageToken = j.nextPageToken;
       if (!pageToken) break;
     }
-    res.setHeader('Cache-Control', 'private, max-age=60');
+    res.setHeader('Cache-Control', 'no-store');
     res.status(200).json({ files });
   } catch (e) {
     res.status(500).json({ error: String((e && e.message) || e) });
