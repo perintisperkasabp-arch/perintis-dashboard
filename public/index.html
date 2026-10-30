@@ -37,7 +37,7 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
   let renderQueued = false;
 
   const api = async (url) => {
-    const r = await fetch(url, { credentials: 'same-origin' });
+    const r = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
     if (r.status === 401) { showLogin(); throw new Error('Perlu login'); }
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
@@ -48,7 +48,7 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
     loader(id, def) { loaders[id] = def; },
     calc(id, def) { calcs[id] = def; },
     data(id) {
-      if (datasets[id]) return { status: datasets[id].status, data: datasets[id].data, message: datasets[id].message, refreshing: false, meta: [] };
+      if (datasets[id]) return { status: datasets[id].status, data: datasets[id].data, message: datasets[id].message, refreshing: !!datasets[id].refreshing, meta: [] };
       if (calcs[id]) {
         if (calcCache[id]) return calcCache[id];
         const ins = calcs[id].inputs.map((i) => dash.data(i));
@@ -66,7 +66,7 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
     setParams(p) { params = { ...params, ...p }; Object.keys(params).forEach((k) => params[k] == null && delete params[k]); queue(); },
     resetParams() { params = {}; queue(); },
     setLink(name) { try { history.replaceState(null, '', '#' + name); } catch (e) {} },
-    refresh() { load(); },
+    refresh() { Object.keys(fileCache).forEach((k) => delete fileCache[k]); load(); },
     colors: ['#ffb020', '#22d3ee', '#a3e635', '#f472b6', '#a78bfa', '#34d399', '#fb923c', '#60a5fa'],
   };
   window.dash = dash;
@@ -92,23 +92,56 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
   }
   function queue() { if (!renderQueued) { renderQueued = true; requestAnimationFrame(render); } }
 
-  async function load() {
-    datasets.ue_all = { status: 'loading', data: [], message: '' }; queue();
+  let loadingNow = false;
+  let lastSig = null;
+  const fileCache = {};      // id|modifiedTime -> jawaban file (CSV base64)
+  const sigOf = (files) => (files || []).map((f) => f.id + ':' + (f.modifiedTime || '')).sort().join('|');
+
+  async function load(answerGiven) {
+    if (loadingNow) return;
+    loadingNow = true;
+    const prev = datasets.ue_all;
+    if (prev.status === 'ok') { prev.refreshing = true; } else { datasets.ue_all = { status: 'loading', data: [], message: '' }; }
+    queue();
     try {
-      const answer = await api('/api/search');
+      const answer = answerGiven || await api('/api/search');
+      const meta = {};
+      (answer.files || []).forEach((f) => { meta[f.id] = f; });
       const call = async (tool, args) => {
-        if (tool === 'download_file_content') return api('/api/file?id=' + encodeURIComponent(args.fileId));
+        if (tool === 'download_file_content') {
+          const m = meta[args.fileId];
+          const key = args.fileId + '|' + (m ? m.modifiedTime : '');
+          if (!fileCache[key]) fileCache[key] = await api('/api/file?id=' + encodeURIComponent(args.fileId));
+          return fileCache[key];
+        }
         if (tool === 'search_files') return { files: [] };
         throw new Error('Tool tidak dikenal: ' + tool);
       };
       const res = await loaders.ue_all.fn({ answer, call, args: {} });
       datasets.ue_all = { status: 'ok', data: Array.isArray(res) ? res : res.rows, message: '' };
+      lastSig = sigOf(answer.files);
     } catch (e) {
-      if (String(e.message) === 'Perlu login') return;
-      datasets.ue_all = { status: 'error', data: [], message: String(e.message || e) };
+      if (String(e.message) === 'Perlu login') { loadingNow = false; return; }
+      if (prev.status === 'ok') { prev.refreshing = false; console.error(e); }
+      else datasets.ue_all = { status: 'error', data: [], message: String(e.message || e) };
     }
+    loadingNow = false;
     queue();
   }
+
+  // Realtime: tiap 20 detik cek apakah ada file UNIT ENTRY yang berubah (waktu ubah di Google Drive).
+  // Hanya file yang berubah yang diunduh ulang.
+  async function poll() {
+    if (document.visibilityState !== 'visible' || loadingNow || datasets.ue_all.status !== 'ok') return;
+    try {
+      const answer = await api('/api/search');
+      if (sigOf(answer.files) !== lastSig) load(answer);
+      window.ppLastCheck = new Date();
+      queue();
+    } catch (e) { /* coba lagi di putaran berikutnya */ }
+  }
+  setInterval(poll, 20 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') poll(); });
 
   // Login
   function showLogin() { const o = document.getElementById('pp-login'); if (o) o.hidden = false; }
@@ -197,6 +230,15 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
 .pp-pick select { font: inherit; font-size: 14px; letter-spacing: 0; text-transform: none; font-weight: 700; color: #111; background: var(--pp-ue); border: 0; border-radius: 6px; padding: 7px 30px 7px 10px; cursor: pointer; appearance: none; background-image: linear-gradient(45deg, transparent 50%, #111 50%), linear-gradient(135deg, #111 50%, transparent 50%); background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%; background-size: 5px 5px; background-repeat: no-repeat; min-width: 11rem; }
 .pp-pick select:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .pp-pick select option { background: #161b22; color: #eef2f6; }
+.pp-refresh { display: inline-flex; align-items: center; gap: 8px; }
+.pp-refresh button { font: inherit; font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #111; background: var(--pp-cpus); border: 0; border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+.pp-refresh button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.pp-refresh button[disabled] { opacity: .6; cursor: progress; }
+.pp-refresh span { font-size: 12px; color: var(--pp-muted); }
+.pp-live { display: inline-flex; align-items: center; gap: 5px; font-weight: 800; letter-spacing: .1em; color: var(--pp-ok) !important; }
+.pp-live i { width: 8px; height: 8px; border-radius: 50%; background: var(--pp-ok); box-shadow: 0 0 0 0 rgba(52,211,153,.6); animation: pp-pulse 2s infinite; }
+@keyframes pp-pulse { 0% { box-shadow: 0 0 0 0 rgba(52,211,153,.6); } 70% { box-shadow: 0 0 0 8px rgba(52,211,153,0); } 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); } }
+@media (prefers-reduced-motion: reduce) { .pp-live i { animation: none; } }
 .pp-chip { display: inline-flex; gap: 6px; align-items: baseline; padding: 6px 10px; border: 1px solid var(--pp-line); background: var(--pp-panel); border-radius: 6px; font-size: 13px; color: var(--pp-muted); }
 .pp-chip b { color: var(--pp-fg); font-size: 14px; }
 .pp-prog { flex: 1 1 220px; min-width: 0; display: grid; gap: 4px; }
@@ -378,6 +420,7 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
       <span class="pp-chip">Hari ini <b data-draw="cell" data-fmt="text" data-source="ue_all" data-field="text" data-where="grp=info&amp;key=hari_ini&amp;period=-">—</b></span>
       <span class="pp-chip">HK berjalan <b data-draw="cell" data-fmt="dec" data-source="ue_all" data-field="value" data-where="grp=info&amp;key=hk_jalan&amp;period=-">—</b> / <b data-draw="cell" data-fmt="dec" data-source="ue_all" data-field="value" data-where="grp=info&amp;key=hk&amp;period=-">—</b> hari</span>
       <span class="pp-chip">Sisa HK <b data-draw="cell" data-fmt="dec" data-source="ue_all" data-field="value" data-where="grp=info&amp;key=sisa_hk&amp;period=-">—</b> hari</span>
+      <div class="pp-refresh"><button type="button" id="pp-refresh-btn">⟳ Perbarui data</button><span class="pp-live"><i></i>LIVE</span><span>Diperbarui <b data-draw="updated" data-source="ue_all">—</b></span></div>
       <div class="pp-prog">
         <span class="pp-prog-label">Hari kerja terpakai</span>
         <div class="pp-prog-track"><div class="pp-prog-fill" data-draw="hkbar" data-source="ue_all"></div></div>
@@ -802,7 +845,7 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
 
 <script>
 dash.loader('ue_all', {
-  description: 'Mencari file "NN UNIT ENTRY … TAHUN" di Google Drive, memilih tahun terbaru, lalu membaca sheet Dashboard (sheet pertama) setiap bulan menjadi baris: bulan, grup, kunci, periode, nilai, teks asli.',
+  description: 'Mencari file "NN UNIT ENTRY … TAHUN" di Google Drive, memilih tahun terbaru, lalu membaca sheet Dashboard (sheet pertama) setiap bulan menjadi baris: bulan, grup, kunci, periode, nilai, teks asli. Jika sel % pencapaian kosong di sheet, % dihitung dari aktual ÷ target (teks: dihitung).',
   fn: async ({ answer, call, args }) => {
     const asObj = (a) => { if (typeof a === 'string') { try { return JSON.parse(a); } catch (e) { return a; } } return a; };
     let found = asObj(answer);
@@ -969,6 +1012,15 @@ dash.loader('ue_all', {
       }
     }
 
+
+    // Jika sel % kosong di sheet (mis. rumus error), hitung dari aktual ÷ target
+    ['ue', 'rev', 'cpus', 'psdn'].forEach((k) => {
+      out.filter((d) => d.grp === k && d.key === 'actual' && d.value != null).forEach((a) => {
+        const has = out.find((d) => d.grp === k && d.key === 'pct' && d.period === a.period && d.value != null);
+        const t = out.find((d) => d.grp === k && d.key === 'target' && d.period === a.period && d.value);
+        if (!has && t) out.push({ grp: k, key: 'pct', period: a.period, value: a.value / t.value, text: 'dihitung' });
+      });
+    });
     return out;
     };
 
@@ -1950,6 +2002,17 @@ dash.calc('analisa_bulan', {
     btn.querySelectorAll('.pp-yt-hide').forEach((s) => { s.hidden = !open; });
     btn.querySelectorAll('.pp-yt-show').forEach((s) => { s.hidden = open; });
   }));
+
+  // Waktu data terakhir dimuat + tombol perbarui
+  window.ppLoadedAt = window.ppLoadedAt || null;
+  window.ppLastRows = window.ppLastRows || null;
+  dash.draw('updated', (el) => {
+    const d = dash.data('ue_all');
+    if (d.status === 'ok' && d.data !== window.ppLastRows) { window.ppLastRows = d.data; window.ppLoadedAt = new Date(); }
+    el.textContent = d.status === 'ok' && window.ppLoadedAt ? window.ppLoadedAt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + (d.refreshing ? ' · memuat…' : '') : d.status === 'loading' ? 'memuat…' : '—';
+    document.querySelectorAll('#pp-refresh-btn').forEach((b) => { b.disabled = d.status === 'loading' || !!d.refreshing; });
+  });
+  document.querySelectorAll('#pp-refresh-btn').forEach((b) => b.addEventListener('click', () => dash.refresh('ue_all')));
 })();
 </script>
 
