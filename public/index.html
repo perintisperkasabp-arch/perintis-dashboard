@@ -120,6 +120,7 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
       const res = await loaders.ue_all.fn({ answer, call, args: {} });
       datasets.ue_all = { status: 'ok', data: Array.isArray(res) ? res : res.rows, message: '' };
       lastSig = sigOf(answer.files);
+      window.ppLastAnswer = answer;
     } catch (e) {
       if (String(e.message) === 'Perlu login') { loadingNow = false; return; }
       if (prev.status === 'ok') { prev.refreshing = false; console.error(e); }
@@ -142,6 +143,26 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
   }
   setInterval(poll, 20 * 1000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') poll(); });
+
+  // Detail komposisi (sheet PKB & UE ASR) per bulan, lewat /api/detail
+  const detailCache = {};
+  window.ppDetail = (m) => {
+    const d = datasets.ue_all;
+    if (d.status !== 'ok' || !window.ppLastAnswer) return { status: 'loading' };
+    const yr = d.data.length ? d.data[0].tahun : null;
+    const f = (window.ppLastAnswer.files || []).filter((x) => {
+      const mm = /^(\d{2})\s+UNIT ENTRY\b.*\b(20\d{2})\s*$/i.exec((x.title || '').trim());
+      return mm && Number(mm[1]) === m && Number(mm[2]) === yr;
+    }).sort((a, b) => String(b.modifiedTime || '').localeCompare(String(a.modifiedTime || '')))[0];
+    if (!f) return { status: 'missing' };
+    const key = f.id + '|' + (f.modifiedTime || '');
+    if (detailCache[key]) return detailCache[key];
+    detailCache[key] = { status: 'loading' };
+    api('/api/detail?id=' + encodeURIComponent(f.id))
+      .then((data) => { detailCache[key] = { status: 'ok', data }; queue(); })
+      .catch((e) => { if (String(e.message) === 'Perlu login') { delete detailCache[key]; return; } detailCache[key] = { status: 'error', message: String(e.message || e) }; queue(); });
+    return detailCache[key];
+  };
 
   // Login
   function showLogin() { const o = document.getElementById('pp-login'); if (o) o.hidden = false; }
@@ -335,6 +356,13 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
 .pp-ytoggle:hover { background: rgba(255,176,32,.12); }
 .pp-ytoggle:focus-visible { outline: 2px solid var(--pp-ue); outline-offset: 2px; }
 #ytd.is-collapsed { padding-bottom: 4px; border-bottom: 1px dashed var(--pp-line); }
+.pp-kgrid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); margin-top: 14px; }
+.pp-kana { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: 13.5px; line-height: 1.5; color: var(--pp-fg); max-width: 110ch; }
+.pp-kana li b { color: var(--pp-ue); }
+.pp-klegend { display: grid; gap: 6px; margin-top: 8px; }
+.pp-klegend div { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--pp-muted); padding: 6px 10px; border-radius: 6px; background: var(--pp-panel2); }
+.pp-klegend b { color: var(--pp-fg); }
+.pp-klegend .up, .pp-klegend .down { color: var(--pp-muted); font-weight: 600; }
 .pp-tabs { display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--pp-line); padding-bottom: 10px; }
 .pp-tab { font: inherit; font-size: 13px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--pp-muted); background: var(--pp-panel); border: 1px solid var(--pp-line); border-radius: 6px; padding: 8px 14px; cursor: pointer; }
 .pp-tab:hover { color: var(--pp-fg); border-color: var(--pp-dim); }
@@ -712,6 +740,17 @@ html, body { margin: 0; background: #07090c; color: #eef2f6; font-family: var(--
             <div class="pp-col fix" id="tingkatkan-tahunan"><h3>Tingkatkan (tahunan)</h3><div class="pp-list" data-draw="pdcay" data-mode="tingkatkan" data-source="pdca_tahun"></div></div>
           </div>
         </div>
+      </div>
+    </section>
+
+    <section id="komposisi" aria-labelledby="h-komposisi">
+      <h2 class="pp-h2" id="h-komposisi">Komposisi unit entry</h2>
+      <p class="pp-sub">Dari sheet PKB bulan yang dipilih di menu Bulan: jenis pelanggan, model kendaraan, dan asuransi. <span data-draw="kstatus">—</span></p>
+      <div class="pp-ysum"><span class="pp-ysum-tag">Analisa</span><ul class="pp-kana" data-draw="kanalisa"></ul></div>
+      <div class="pp-kgrid">
+        <div class="pp-box" id="type-customer"><h3>Type customer</h3><p class="pp-note">Cash (NORMAL di PKB) · TWC · Insurance</p><div class="pp-chart" data-draw="ktype" style="min-height:250px"></div><div class="pp-klegend" data-draw="ktypelegend"></div></div>
+        <div class="pp-box" id="unit-model"><h3>Unit by model</h3><p class="pp-note">Jumlah unit masuk per tipe kendaraan</p><div class="pp-chart" data-draw="kmodel" style="min-height:200px"></div></div>
+        <div class="pp-box" id="unit-insurance"><h3>Unit by insurance</h3><p class="pp-note">Unit masuk per asuransi. Warna batang = pencapaian target di sheet UE ASR: hijau ≥ 100%, kuning 90–99%, merah &lt; 90%, biru = tanpa target.</p><div class="pp-chart" data-draw="kins" style="min-height:200px"></div></div>
       </div>
     </section>
 
@@ -2017,6 +2056,138 @@ dash.calc('analisa_bulan', {
     document.querySelectorAll('#pp-refresh-btn').forEach((b) => { b.disabled = d.status === 'loading' || !!d.refreshing; });
   });
   document.querySelectorAll('#pp-refresh-btn').forEach((b) => b.addEventListener('click', () => dash.refresh('ue_all')));
+
+  // ---- Komposisi unit entry (Type customer, model, asuransi) ----
+  const KC = { cash: '#a3e635', twc: '#a78bfa', insurance: '#22d3ee', unknown: '#5d6876' };
+  const KN = { cash: 'Cash', twc: 'TWC', insurance: 'Insurance', unknown: 'Belum diisi' };
+  const BLN_K = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+  const kget = () => (window.ppDetail && K.month() != null ? window.ppDetail(K.month()) : { status: 'loading' });
+  const kprev = () => { const m = K.month(); if (!m || m < 2 || !window.ppDetail) return null; const p = window.ppDetail(m - 1); return p.status === 'ok' ? p.data : null; };
+  const pcf = (v) => (v * 100).toFixed(v < 0.1 ? 1 : 0).replace('.', ',') + '%';
+  const sorted = (obj) => Object.entries(obj || {}).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+
+  dash.draw('kstatus', (el) => {
+    const d = kget();
+    el.textContent = d.status === 'loading' ? 'Memuat data PKB…' : d.status === 'error' ? 'Gagal memuat: ' + d.message : d.status === 'missing' ? 'File bulan ini tidak ditemukan.' : d.data.total ? 'Total ' + K.idInt.format(d.data.total) + ' unit dari sheet ' + d.data.sheets.pkb + '.' : 'Sheet PKB kosong.';
+    el.style.color = d.status === 'error' ? K.C.bad : '';
+  });
+
+  dash.draw('ktype', (el) => {
+    const d = kget();
+    el.querySelectorAll('svg').forEach((s) => s.remove());
+    if (d.status !== 'ok' || !d.data.total) return;
+    const t = d.data.type;
+    const parts = ['insurance', 'cash', 'twc', 'unknown'].map((k) => ({ k, v: t[k] || 0 })).filter((p) => p.v > 0);
+    const W = Math.max(260, el.clientWidth || 300), H = 250, r = 105;
+    const svg = d3.select(el).insert('svg', ':first-child').attr('viewBox', `0 0 ${W} ${H}`).attr('width', '100%').attr('height', H);
+    const g = svg.append('g').attr('transform', `translate(${W / 2},${H / 2})`);
+    const arcs = d3.pie().value((p) => p.v).sort(null).padAngle(0.02)(parts);
+    const arc = d3.arc().innerRadius(r * 0.6).outerRadius(r).cornerRadius(3);
+    const lab = d3.arc().innerRadius(r * 0.8).outerRadius(r * 0.8);
+    const tip = K.tipFor(el);
+    g.selectAll('path').data(arcs).join('path').attr('d', arc).attr('fill', (a) => KC[a.data.k])
+      .on('mousemove', (ev, a) => tip.show(ev, KN[a.data.k], [{ color: KC[a.data.k], text: K.idInt.format(a.data.v) + ' unit · ' + pcf(a.data.v / d.data.total) }]))
+      .on('mouseleave', () => tip.hide());
+    g.selectAll('text.l').data(arcs.filter((a) => a.endAngle - a.startAngle > 0.3)).join('text').attr('class', 'l').attr('transform', (a) => `translate(${lab.centroid(a)})`).attr('text-anchor', 'middle').attr('dy', 4).attr('fill', '#111').attr('font-size', 12).attr('font-weight', 800).text((a) => pcf(a.data.v / d.data.total));
+    g.append('text').attr('y', -2).attr('text-anchor', 'middle').attr('fill', K.C.fg).attr('font-size', 26).attr('font-weight', 800).text(K.idInt.format(d.data.total));
+    g.append('text').attr('y', 16).attr('text-anchor', 'middle').attr('fill', K.C.muted).attr('font-size', 10).attr('letter-spacing', '.12em').text('UNIT MASUK');
+  });
+
+  dash.draw('ktypelegend', (el) => {
+    const d = kget();
+    el.replaceChildren();
+    if (d.status !== 'ok' || !d.data.total) return;
+    const p = kprev();
+    ['insurance', 'cash', 'twc', 'unknown'].forEach((k) => {
+      const v = d.data.type[k] || 0;
+      if (!v && k === 'unknown') return;
+      const row = document.createElement('div');
+      const a = document.createElement('span'); const sw = document.createElement('i'); sw.className = 'pp-sw'; sw.style.background = KC[k]; a.append(sw, document.createTextNode(KN[k]));
+      const b = document.createElement('span');
+      const bb = document.createElement('b'); bb.textContent = K.idInt.format(v) + ' unit · ' + pcf(v / d.data.total); b.appendChild(bb);
+      if (p && p.total) {
+        const diff = (v / d.data.total - (p.type[k] || 0) / p.total) * 100;
+        if (Math.abs(diff) >= 0.5) { const s = document.createElement('span'); s.className = diff > 0 ? 'up' : 'down'; s.textContent = '  ' + (diff > 0 ? '▲ ' : '▼ ') + Math.abs(diff).toFixed(1).replace('.', ',') + ' poin'; b.appendChild(s); }
+      }
+      row.append(a, b); el.appendChild(row);
+    });
+  });
+
+  const hbars = (el, items, color, rightText, tipLines) => {
+    el.querySelectorAll('svg').forEach((s) => s.remove());
+    if (!items.length) return;
+    const W = Math.max(280, el.clientWidth || 340), rowH = 28, H = items.length * rowH + 8;
+    const svg = d3.select(el).insert('svg', ':first-child').attr('viewBox', `0 0 ${W} ${H}`).attr('width', '100%').attr('height', H);
+    const tmp = svg.append('text').attr('font-size', 12).attr('font-weight', 700);
+    let ml = 0; items.forEach((d) => { tmp.text(d.name); ml = Math.max(ml, tmp.node().getComputedTextLength()); });
+    let mr = 0; tmp.attr('font-weight', 700).attr('font-size', 11.5); items.forEach((d) => { tmp.text(rightText(d)); mr = Math.max(mr, tmp.node().getComputedTextLength()); });
+    tmp.remove(); ml = Math.ceil(ml) + 12; mr = Math.ceil(mr) + 14;
+    const x = d3.scaleLinear([0, d3.max(items, (d) => d.v) || 1], [ml, Math.max(ml + 30, W - mr)]);
+    const g = svg.selectAll('g').data(items).join('g').attr('transform', (d, i) => `translate(0,${i * rowH + 4})`);
+    g.append('text').attr('x', ml - 8).attr('y', 15).attr('text-anchor', 'end').attr('fill', K.C.fg).attr('font-size', 12).attr('font-weight', 700).text((d) => d.name);
+    g.append('rect').attr('x', ml).attr('y', 3).attr('height', 17).attr('rx', 3).attr('width', (d) => Math.max(2, x(d.v) - ml)).attr('fill', (d, i) => (typeof color === 'function' ? color(d, i) : color));
+    g.append('text').attr('x', (d) => x(d.v) + 7).attr('y', 16).attr('fill', K.C.fg).attr('font-size', 11.5).attr('font-weight', 700).text(rightText);
+    const tip = K.tipFor(el);
+    g.append('rect').attr('x', 0).attr('y', 0).attr('width', W).attr('height', rowH).attr('fill', 'transparent')
+      .on('mousemove', (ev, d) => tip.show(ev, d.name, tipLines(d))).on('mouseleave', () => tip.hide());
+  };
+
+  dash.draw('kmodel', (el) => {
+    const d = kget();
+    if (d.status !== 'ok' || !d.data.total) { el.querySelectorAll('svg').forEach((s) => s.remove()); return; }
+    const all = sorted(d.data.model);
+    const top = all.slice(0, 10).map(([name, v]) => ({ name, v }));
+    const rest = all.slice(10).reduce((s, [, v]) => s + v, 0);
+    if (rest) top.push({ name: 'LAINNYA (' + (all.length - 10) + ' model)', v: rest, other: true });
+    hbars(el, top, (it, i) => (it.other ? '#3b4552' : i < 3 ? K.C.ue : 'rgba(255,176,32,.55)'), (it) => it.v + ' · ' + pcf(it.v / d.data.total), (it) => [{ color: K.C.ue, text: it.v + ' unit · ' + pcf(it.v / d.data.total) + ' dari unit masuk' }]);
+  });
+
+  dash.draw('kins', (el) => {
+    const d = kget();
+    if (d.status !== 'ok' || !d.data.total) { el.querySelectorAll('svg').forEach((s) => s.remove()); return; }
+    const all = sorted(d.data.insurance);
+    const insTotal = d.data.type.insurance || 1;
+    const asr = {}; (d.data.asr || []).forEach((a) => { asr[a.name] = a; });
+    const items = all.slice(0, 14).map(([name, v]) => ({ name, v, a: asr[name] }));
+    const rest = all.slice(14).reduce((s, [, v]) => s + v, 0);
+    if (rest) items.push({ name: 'LAINNYA', v: rest, other: true });
+    const right = (it) => it.v + ' · ' + pcf(it.v / insTotal) + (it.a && it.a.target ? '   tgt ' + it.a.target + ' / act ' + (it.a.act == null ? '—' : it.a.act) : '');
+    hbars(el, items, (it) => (it.other ? '#3b4552' : it.a && it.a.target && it.a.act != null ? (it.a.act >= it.a.target ? K.C.ok : it.a.act >= 0.9 * it.a.target ? K.C.warn : K.C.bad) : K.C.rev), right,
+      (it) => [{ color: K.C.rev, text: it.v + ' unit · ' + pcf(it.v / insTotal) + ' dari unit asuransi' }].concat(it.a && it.a.target ? [{ text: 'UE ASR: target ' + it.a.target + ', aktual ' + (it.a.act == null ? '—' : it.a.act) + (it.a.act != null ? ' (' + Math.round((it.a.act / it.a.target) * 100) + '%)' : '') }] : []));
+  });
+
+  dash.draw('kanalisa', (el) => {
+    const d = kget();
+    el.replaceChildren();
+    const li = (parts) => { const l = document.createElement('li'); parts.forEach((p) => { if (typeof p === 'string') l.appendChild(document.createTextNode(p)); else { const b = document.createElement('b'); b.textContent = p.b; l.appendChild(b); } }); el.appendChild(l); };
+    if (d.status === 'loading') { li(['Memuat data PKB…']); return; }
+    if (d.status !== 'ok') { li([d.status === 'error' ? 'Data komposisi belum bisa dimuat: ' + d.message : 'File bulan ini tidak ditemukan.']); return; }
+    const x = d.data, T = x.total || 0;
+    if (!T) { li(['Sheet PKB bulan ini belum berisi unit.']); return; }
+    const p = kprev(), m = K.month();
+    const sh = (k) => (x.type[k] || 0) / T;
+    let s1 = ['Insurance ', { b: pcf(sh('insurance')) }, ' (' + x.type.insurance + ' unit), Cash ', { b: pcf(sh('cash')) }, ' (' + x.type.cash + '), TWC ', { b: pcf(sh('twc')) }, ' (' + x.type.twc + ').'];
+    if (p && p.total) { const dc = (sh('cash') - (p.type.cash || 0) / p.total) * 100; if (Math.abs(dc) >= 0.5) s1.push(' Porsi Cash ' + (dc > 0 ? 'naik ' : 'turun ') + Math.abs(dc).toFixed(1).replace('.', ',') + ' poin dibanding ' + BLN_K[m - 2] + '.'); }
+    li(s1);
+    const ins = sorted(x.insurance), insT = x.type.insurance || 0;
+    if (ins.length && insT) {
+      const top3 = ins.slice(0, 3), t3 = top3.reduce((s, [, v]) => s + v, 0) / insT;
+      li(['3 asuransi terbesar: ', { b: top3.map(([n, v]) => n + ' ' + v).join(', ') }, ' = ' + pcf(t3) + ' dari unit asuransi' + (t3 >= 0.6 ? '. Ketergantungan tinggi: jaga hubungan dan kecepatan SPK dengan ketiganya.' : '.')]);
+    }
+    const tg = (x.asr || []).filter((a) => a.target > 0 && a.act != null);
+    if (tg.length) {
+      const miss = tg.filter((a) => a.act < a.target).sort((a, b) => a.act / a.target - b.act / b.target);
+      const hit = tg.filter((a) => a.act >= a.target);
+      if (miss.length) li(['Asuransi di bawah target (UE ASR): ', { b: miss.slice(0, 5).map((a) => a.name + ' ' + a.act + '/' + a.target + ' (' + Math.round((a.act / a.target) * 100) + '%)').join(', ') }, '. Prioritaskan follow-up ke asuransi ini.']);
+      if (hit.length) li(['Sudah capai target: ', { b: hit.map((a) => a.name).join(', ') }, '.']);
+    }
+    const mod = sorted(x.model);
+    if (mod.length) {
+      const t3m = mod.slice(0, 3), sm = t3m.reduce((s, [, v]) => s + v, 0) / T;
+      li(['Model terbanyak ', { b: mod[0][0] + ' ' + pcf(mod[0][1] / T) }, '; 3 model teratas (' + t3m.map(([n]) => n).join(', ') + ') = ' + pcf(sm) + ' unit. Siapkan stok part dan bahan cat untuk model-model ini.']);
+    }
+    if (x.type.unknown) li([{ b: x.type.unknown + ' unit' }, ' belum diisi kolom CASH/ASR di sheet PKB.']);
+  });
 })();
 </script>
 
